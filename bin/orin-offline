@@ -40,6 +40,10 @@ go_offline() {
 }
 
 go_online() {
+  # Run to the end even if the calling SSH session dies: restarting the USB-C network below drops an SSH
+  # connection made over USB, and a half-finished go_online leaves the Orin unreachable.
+  trap '' HUP PIPE
+  exec </dev/null >>/tmp/orin-online.txt 2>&1 || true
   rfkill unblock all
   nmcli radio all on 2>/dev/null
   nmcli networking on 2>/dev/null
@@ -52,7 +56,7 @@ go_online() {
 
 case "${1:-status}" in
   on) go_offline ;;
-  off) go_online ;;
+  off) echo "going online (WiFi/Tailscale may need ~30 s; an SSH session over USB-C may drop once)"; go_online ;;
   status) if check >/dev/null; then echo "OFFLINE ✓"; exit 0; else echo "ONLINE"; check; exit 1; fi ;;
   test)
     n=${2:-60}; [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -le 600 ] || { echo "test N: 1..600 s"; exit 2; }
