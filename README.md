@@ -72,7 +72,21 @@ q Quit = destroy the session space (asks first), stop model, optionally back onl
   every switch is logged in `/var/log/orin-offline.log`. `test N` returns online after N seconds.
 - `orin-usb list|mount DEV [rw]|unmount DEV` (sudo, no password): USB drives only; **read-only** for
   import, read-write only for export; unmount powers the drive off. BitLocker drives not supported yet.
-- the console warns in red while online; agent write actions need `y` like everywhere else
+- **offline required:** import, tools, agent and export refuse to run unless the Orin is verified offline
+  (`ORIN_ALLOW_ONLINE=1` only for tests with non-patient data); agent write actions need `y` like everywhere else
+- **idle = destroyed:** no input for 30 min at a console prompt (`ORIN_IDLE_MIN`) destroys the session space and
+  exits; an idle shell on the Orin's screen logs out after 30 min (`TMOUT`), and that logout destroys it too
+- **case names:** default `case-YYYYMMDD-NN`; a name equal to the drive's folder name needs confirmation, and a
+  name containing a name / ID / birth date of the imported patients is replaced automatically
+- **export check** (menu 6): every file of the chosen step is searched for the case's original identifiers
+  (names of patient and staff, IDs, accession, birth date in all spellings): DICOM headers incl. sequences and
+  private tags, MHA headers, text/JSON/CSV/HTML. Steps that must be clean (`anonymized`, `mha`, `report`, `work`)
+  are **blocked** on any hit; identifiable steps (`original`, `organized`, `structures` with RTSTRUCT) need typed
+  `IDENTIFIABLE`. Every copied file is read back and SHA-256 compared; `MANIFEST.sha256` and `EXPORT_INFO.txt`
+  (case, step, date, tool version, check counts — no patient data) are written next to the export.
+  Pixel data is not searched: burned-in text needs a visual check
+- **no traces on the system disk:** temporary files (plastimatch, masks, series list) go to `/data/medical/.tmp`
+  inside the encrypted space; shell history is not written to disk (`unset HISTFILE`); no swap is configured
 - installed with `bin/setup-offline-mode.sh` (already done)
 
 ## Web interface (online use only)
@@ -294,6 +308,20 @@ read the code, check results. Anonymization, structure naming and organizing sta
 
 Model server memory: `bin/llm-start.sh` runs llama-server with `-np 1 --cache-ram 512`. The default prompt cache
 (8 GB) is the whole RAM of the Orin; long agent runs got llama-server killed by the out-of-memory killer.
+
+## Tests, versions, deployment
+
+```bash
+~/dicom-env/bin/python tests/run_tests.py     # on the Orin: 25 checks on synthetic data, exit 0 = all passed
+bash bin/deploy.sh                            # on the PC (Git Bash): deploy the committed code + run the tests
+```
+- anonymization test: identifiers planted in tags, private tags, nested sequences, free text (also the birth
+  date as `1965-03-12` and staff names in RTSTRUCT descriptions — both leaked before and are now cleaned) must
+  not appear **anywhere in the output bytes**; RTSTRUCT → CT references, date intervals, no private tags
+- export check, folder layout, structure tools (union/intersection/minus exact, margins vs analytic spheres),
+  label parsing
+- code is a git repository; `bin/deploy.sh` deploys only committed code and writes the commit id to
+  `~/orin-agent/COMMIT`; `VERSION` + commit appear in DeidentificationMethod, reports and JSON sidecars
 
 ## Swap the model
 
