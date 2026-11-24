@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Orin Agent</title>
+<style>
+:root{--bg:#f7f7f8;--panel:#fff;--fg:#1f2328;--mut:#6b7280;--bd:#e5e7eb;--acc:#2563eb;--acc-fg:#fff;
+--ok:#16a34a;--warn:#d97706;--bad:#dc2626;--chip:#eef2ff;--q:#2563eb;--code:#f3f4f6}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f1115;--panel:#171a21;--fg:#e6e8eb;--mut:#9aa1ab;
+--bd:#2a2f3a;--acc:#3b82f6;--chip:#1e2533;--q:#1d4ed8;--code:#20242d}}
+*{box-sizing:border-box}html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+button{font:inherit;cursor:pointer;border:1px solid var(--bd);background:var(--panel);color:var(--fg);border-radius:8px;padding:6px 12px}
+button.pri{background:var(--acc);color:var(--acc-fg);border-color:var(--acc)}
+button:disabled{opacity:.5;cursor:default}
+input,select,textarea{font:inherit;color:var(--fg);background:var(--panel);border:1px solid var(--bd);border-radius:8px;padding:7px 9px;width:100%}
+.app{display:grid;grid-template-columns:300px 1fr;height:100vh}
+aside{border-right:1px solid var(--bd);background:var(--panel);overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:16px}
+h1{font-size:17px;margin:0;display:flex;align-items:center;gap:8px}
+h2{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--mut);margin:0 0 8px}
+.pill{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--mut)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--bad)}.dot.on{background:var(--ok)}
+.row{display:flex;gap:6px;flex-wrap:wrap}.row>*{flex:1}.row button{white-space:nowrap}
+label{display:block;font-size:12px;color:var(--mut);margin:8px 0 3px}
+.tools{display:flex;flex-wrap:wrap;gap:4px}
+.tag{font-size:11px;padding:1px 7px;border-radius:999px;background:var(--chip)}
+.tag.w{background:#fde68a;color:#78350f}
+.mut{color:var(--mut)}.small{font-size:12px}
+.reports a{display:block;font-size:12px;color:var(--acc);cursor:pointer;padding:2px 0;word-break:break-all}
+main{display:flex;flex-direction:column;min-width:0;height:100vh}
+#log{flex:1;overflow-y:auto;padding:20px max(16px,calc((100% - 860px)/2))}
+.msg{margin:10px 0;max-width:100%}
+.q{margin-left:auto;background:var(--q);color:#fff;padding:9px 13px;border-radius:14px 14px 4px 14px;width:fit-content;max-width:80%;white-space:pre-wrap}
+.a{background:var(--panel);border:1px solid var(--bd);padding:11px 14px;border-radius:14px 14px 14px 4px}
+.a p{margin:.3em 0}.a ul{margin:.3em 0;padding-left:1.3em}.a code{background:var(--code);padding:0 4px;border-radius:4px}
+details.tool{border:1px solid var(--bd);border-radius:10px;background:var(--panel);font-size:13px}
+details.tool summary{padding:6px 10px;cursor:pointer;list-style:none;display:flex;gap:8px;align-items:center}
+details.tool summary::-webkit-details-marker{display:none}
+details.tool pre{margin:0;padding:8px 10px;border-top:1px solid var(--bd);white-space:pre-wrap;word-break:break-word;max-height:320px;overflow:auto;font-size:12px}
+.fn{font-family:ui-monospace,Consolas,monospace;font-size:12px}
+.approval{border:2px solid var(--warn);border-radius:12px;padding:12px 14px;background:var(--panel)}
+.approval .row{margin-top:10px;max-width:320px}
+.note{font-size:12px;color:var(--mut);text-align:center}
+.err{color:var(--bad)}
+.thinking{font-size:12px;color:var(--mut)}
+.thinking::after{content:"";animation:dots 1.2s infinite}
+@keyframes dots{0%{content:""}33%{content:"."}66%{content:".."}100%{content:"..."}}
+img.thumb{max-width:260px;border-radius:8px;margin:6px 10px}
+footer{border-top:1px solid var(--bd);background:var(--panel);padding:12px max(16px,calc((100% - 860px)/2))}
+.ask{display:flex;gap:8px}.ask textarea{resize:none;height:44px}.ask button{white-space:nowrap;flex:0 0 auto}
+.examples{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
+.examples button{font-size:12px;padding:3px 9px;border-radius:999px}
+.modal{position:fixed;inset:0;background:#0007;display:none;align-items:center;justify-content:center;padding:16px;z-index:9}
+.modal.show{display:flex}
+.box{background:var(--panel);border-radius:12px;width:min(760px,100%);max-height:85vh;display:flex;flex-direction:column}
+.box header{padding:10px 14px;border-bottom:1px solid var(--bd);display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+.box header b{word-break:break-all;min-width:0;flex:1 1 200px}
+.box header .row{flex:0 0 auto;flex-wrap:nowrap}.box header button{white-space:nowrap}
+.box .body{overflow:auto;padding:10px 14px}
+.box pre{white-space:pre-wrap;font-size:12px;margin:0}
+.dir{padding:5px 8px;border-radius:6px;cursor:pointer}.dir:hover{background:var(--chip)}
+.empty{margin:auto;text-align:center;color:var(--mut);max-width:420px;padding-top:12vh}
+.banner{display:none;margin:12px max(16px,calc((100% - 860px)/2)) 0;padding:10px 14px;border-radius:10px;
+  border:1px solid var(--warn);background:color-mix(in srgb,var(--warn) 12%,var(--panel));font-size:13px}
+.banner a{color:var(--acc);cursor:pointer;font-weight:600}
+.fwarn{font-size:12px;color:var(--warn);margin-top:3px}
+@media (max-width:760px){.app{grid-template-columns:1fr;height:auto}aside{border-right:0;border-bottom:1px solid var(--bd)}main{height:80vh}}
+</style>
+</head>
+<body>
+<div class="app">
+<aside>
+  <div>
+    <h1>🧠 Orin Agent</h1>
+    <div class="pill" style="margin-top:6px"><span id="mdot" class="dot"></span><span id="mstat">Checking model…</span></div>
+    <div class="row" style="margin-top:8px">
+      <button onclick="model('start','4b')">Start 4B</button><button onclick="model('start','2b')">Start 2B</button>
+      <button onclick="model('stop')">Stop</button>
+    </div>
+  </div>
+  <div id="vaultBox" style="display:none">
+    <h2>Session space (encrypted, temporary)</h2>
+    <div class="pill"><span id="vdot" class="dot"></span><span id="vstat"></span></div>
+    <div id="vact" style="margin-top:6px"></div>
+  </div>
+  <div>
+    <h2>Task</h2>
+    <label>Config</label><select id="cfg" onchange="renderFields()"></select>
+    <div id="fields"></div>
+    <button class="pri" style="width:100%;margin-top:10px" id="loadBtn" onclick="load()">Load</button>
+    <div id="loadMsg" class="small mut" style="margin-top:6px"></div>
+  </div>
+  <div id="info" style="display:none">
+    <h2>Session</h2>
+    <div id="desc" class="small"></div>
+    <label>Tools</label><div id="tools" class="tools"></div>
+  </div>
+  <div id="repBox" style="display:none">
+    <h2>Reports <a class="small" style="cursor:pointer;color:var(--acc);text-transform:none" onclick="loadReports()">refresh</a></h2>
+    <div id="reports" class="reports"></div>
+  </div>
+  <div class="small mut" style="margin-top:auto">Runs locally on the Orin · data stays on the device · write actions need your approval</div>
+</aside>
+<main>
+  <div class="banner" id="vbanner">🔒 <b>No session space.</b> <code>/data/medical</code> exists only during a session —
+    <a onclick="focusUnlock()">start one in the sidebar</a>; ending it destroys everything in it.</div>
+  <div id="log"><div class="empty" id="empty"><div style="font-size:34px">🩻</div>
+    <p>Pick a config and a folder on the left, click <b>Load</b>, then ask a question.</p>
+    <p class="small">e.g. “Which radiotherapy data is there?” · “Organize the files” · “Convert to MHA”</p></div></div>
+  <footer>
+    <div class="examples" id="examples"></div>
+    <div class="ask">
+      <textarea id="q" placeholder="Ask… (Enter to send, Shift+Enter for a new line)" disabled></textarea>
+      <button class="pri" id="send" onclick="send()" disabled>Send</button>
+    </div>
+  </footer>
+</main>
+</div>
+<div class="modal" id="modal" onclick="if(event.target===this)closeModal()"><div class="box">
+  <header><b id="mtitle"></b><div class="row" style="flex:0"><button id="mpick" style="display:none">Select this folder</button><button onclick="closeModal()">Close</button></div></header>
+  <div class="body" id="mbody"></div></div></div>
+<script>
+const $ = s => document.querySelector(s);
+let CFGS = [], SID = null, SINCE = 0, polling = false, thinkingEl = null;
+const EXAMPLES = {
+  "dicom.json": ["What is in this folder?", "Which radiotherapy data is there?", "Any CT with slice thickness below 1 mm?"],
+  "dicom-write.json": ["What is in this folder?", "Show me the organized structure first", "Create an anonymized copy", "Convert to MHA, including RTSTRUCT"],
+  "system.json": ["How are memory and temperature?", "Which network is connected?"]};
+
+function esc(s){return String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]))}
+function md(t){ // tiny markdown: bold, code, lists, paragraphs
+  const lines = esc(t).split("\n"); let h = "", inList = false;
+  for (let l of lines){
+    l = l.replace(/\*\*(.+?)\*\*/g,"<b>$1</b>").replace(/`([^`]+)`/g,"<code>$1</code>");
+    const m = l.match(/^\s*(?:[-*•]|\d+\.)\s+(.*)/);
+    if (m){ if(!inList){h+="<ul>";inList=true} h+=`<li>${m[1]}</li>`; continue }
+    if (inList){h+="</ul>";inList=false}
+    if (l.trim()) h += `<p>${l}</p>`;
+  }
+  return h + (inList?"</ul>":"");
+}
+async function api(path, opt={}){
+  const r = await fetch(path, {headers:{"Content-Type":"application/json"}, ...opt});
+  if (!r.ok){ let d; try{d=(await r.json()).detail}catch{d=r.statusText} throw new Error(d) }
+  return r.headers.get("content-type")?.includes("json") ? r.json() : r.text();
+}
+async function modelStatus(){
+  try{ const m = await api("/api/model"); $("#mdot").className = "dot"+(m.running?" on":"");
+    $("#mstat").textContent = m.running ? `Model running: ${m.name}` : "Model not running"; }
+  catch{ $("#mstat").textContent = "Cannot reach server" }
+}
+const VAULT = "/data/medical";
+let vaultState = null;
+const inVault = p => !!p && (p === VAULT || p.startsWith(VAULT + "/"));
+function focusUnlock(){ const i = $("#vbtn"); if(i){ i.scrollIntoView({block:"center"}); i.focus() } }
+function folderWarn(){
+  document.querySelectorAll("#fields input").forEach(i=>{
+    let w = i.parentElement.nextElementSibling;
+    if (!w || !w.classList.contains("fwarn")){ w = document.createElement("div"); w.className = "fwarn"; i.parentElement.after(w) }
+    w.innerHTML = (vaultState === false && inVault(i.value.trim())) ? `🔒 No session space — <a onclick="focusUnlock()" style="cursor:pointer;text-decoration:underline">start one first</a>` : "";
+  });
+}
+async function vaultStatus(){
+  try{ const v = await api("/api/vault"); if(!v.installed) return;
+    $("#vaultBox").style.display = ""; $("#vdot").className = "dot"+(v.unlocked?" on":"");
+    $("#vstat").textContent = v.unlocked ? `Active · ${v.free_gb} GB free of ${v.total_gb} GB` : "None";
+    $("#vbanner").style.display = v.unlocked ? "none" : "block";
+    if (vaultState === v.unlocked) return;
+    vaultState = v.unlocked;
+    $("#vact").innerHTML = v.unlocked
+      ? `<button onclick="vaultLock()" style="width:100%">🗑 End session (destroy all data)</button>`
+      : `<button class="pri" style="width:100%" id="vbtn" onclick="vaultUnlock(event)">➕ Start new session space</button>
+         <div id="vmsg" class="small" style="margin-top:4px"></div>`;
+    folderWarn();
+  }catch{}
+}
+async function vaultUnlock(e){
+  e.preventDefault();
+  $("#vbtn").disabled = true; $("#vmsg").className = "small mut"; $("#vmsg").textContent = "Creating… (a few seconds)";
+  try{ const r = await api("/api/vault/unlock", {method:"POST"}); if(!r.ok) throw new Error(r.output); vaultStatus() }
+  catch(err){ $("#vmsg").className = "small err"; $("#vmsg").textContent = err.message; $("#vbtn").disabled = false }
+}
+async function vaultLock(){
+  if(!confirm("End the session? Everything in /data/medical is destroyed for good. Export first.")) return;
+  try{ const r = await api("/api/vault/lock", {method:"POST"}); if(!r.ok) alert(r.output);
+    SID = null; $("#q").disabled = $("#send").disabled = true; addNote("Session space destroyed"); }
+  catch(e){ alert(e.message) }
+  vaultStatus();
+}
+async function model(action, size){
+  $("#mstat").textContent = action==="start" ? `Starting ${size}… (~10 s)` : "Stopping…";
+  try{ await api(`/api/model/${action}?size=${size||"4b"}`, {method:"POST"}) }catch(e){ alert(e.message) }
+  modelStatus();
+}
+async function init(){
+  CFGS = await api("/api/configs");
+  $("#cfg").innerHTML = CFGS.map(c=>`<option value="${c.name}">${c.name}${c.allow_write?" (can write)":""}</option>`).join("");
+  try{ const last = localStorage.getItem("cfg"); if(last && CFGS.some(c=>c.name===last)) $("#cfg").value = last }catch{}
+  renderFields(); modelStatus(); vaultStatus();
+  setInterval(()=>{ modelStatus(); vaultStatus() }, 15000);
+}
+function renderFields(){
+  const c = CFGS.find(x=>x.name===$("#cfg").value); if(!c) return;
+  const seen = new Set();
+  $("#fields").innerHTML = c.placeholders.filter(p=>!seen.has(p.name)&&seen.add(p.name)).map(p=>{
+    let saved = ""; try{ saved = localStorage.getItem("f2_"+p.name) || "" }catch{}
+    const browse = /folder|output/.test(p.name) ? `<button onclick="browse('${p.name}')" style="flex:0">Browse</button>` : "";
+    return `<label>${p.name}${p.required?" *":" (optional)"}</label><div class="row"><input id="f_${p.name}" value="${esc(saved||p.default)}" placeholder="${p.required?"required":"empty = default"}" oninput="folderWarn()">${browse}</div>`;
+  }).join("");
+  folderWarn();
+  $("#examples").innerHTML = (EXAMPLES[c.name]||[]).map(e=>`<button onclick="ex(this)">${esc(e)}</button>`).join("");
+}
+function ex(b){ $("#q").value = b.textContent; send() }
+async function browse(field, path){
+  const start = path || $("#f_"+field).value || "";
+  if (vaultState === false && (inVault(start) || !start)){ focusUnlock();
+    $("#loadMsg").innerHTML = `<span class="err">🔒 Start a session space first (sidebar).</span>`; return }
+  let d; try{ d = await api("/api/browse?path="+encodeURIComponent(start)) }
+  catch(e){ try{ d = await api("/api/browse?path=~") }catch(e2){ alert(e.message); return } }
+  $("#mtitle").textContent = d.path;
+  $("#mbody").innerHTML = (d.parent?`<div class="dir" onclick="browse('${field}','${esc(d.parent)}')">⬆️ ..</div>`:"") +
+    d.dirs.map(x=>`<div class="dir" onclick="browse('${field}','${esc(d.path+"/"+x)}')">📁 ${esc(x)}</div>`).join("") ||
+    `<div class="mut">(empty)</div>`;
+  $("#mpick").style.display = ""; $("#mpick").onclick = ()=>{ $("#f_"+field).value = d.path; closeModal(); folderWarn() };
+  $("#modal").classList.add("show");
+}
+function closeModal(){ $("#modal").classList.remove("show") }
+async function load(){
+  const c = $("#cfg").value, values = {};
+  document.querySelectorAll("#fields input").forEach(i=>{ const k=i.id.slice(2); values[k]=i.value.trim();
+    try{ localStorage.setItem("f2_"+k, values[k]) }catch{} });
+  try{ localStorage.setItem("cfg", c) }catch{}
+  if (vaultState === false && Object.values(values).some(inVault)){
+    $("#loadMsg").innerHTML = `<span class="err">🔒 The folder is in /data/medical, but no session space is active. Start one first (sidebar, top).</span>`;
+    focusUnlock(); return;
+  }
+  $("#loadBtn").disabled = true; $("#loadMsg").textContent = "Scanning folder, preparing tools…";
+  try{
+    const s = await api("/api/session", {method:"POST", body:JSON.stringify({config:c, values})});
+    SID = s.id; SINCE = 0;
+    $("#log").innerHTML = ""; addNote(`Loaded ${c} · model ${s.model}`);
+    $("#desc").innerHTML = s.describe.map(esc).join("<br>") || "—";
+    $("#tools").innerHTML = s.tools.map(t=>`<span class="tag${t.write?" w":""}" title="${t.write?"write tool: needs approval":"read-only"}">${t.write?"✏️ ":""}${esc(t.name)}</span>`).join("");
+    $("#info").style.display = ""; $("#repBox").style.display = ""; loadReports();
+    $("#q").disabled = $("#send").disabled = false; $("#q").focus(); $("#loadMsg").textContent = "";
+    if (!polling) poll();
+  }catch(e){ $("#loadMsg").innerHTML = `<span class="err">${esc(e.message)}</span>` }
+  $("#loadBtn").disabled = false;
+}
+function addEl(html, cls){ const d = document.createElement("div"); d.className = "msg "+(cls||""); d.innerHTML = html;
+  $("#log").appendChild(d); $("#log").scrollTop = $("#log").scrollHeight; return d }
+function addNote(t){ addEl(esc(t), "note") }
+function setThinking(on){ if(on && !thinkingEl) thinkingEl = addEl("Model is thinking","thinking"); if(!on && thinkingEl){thinkingEl.remove(); thinkingEl=null} }
+const lastCall = {};
+function render(ev){
+  if (ev.type==="question"){ addEl(`<div class="q">${esc(ev.text)}</div>`) }
+  else if (ev.type==="thinking"){ setThinking(true) }
+  else if (ev.type==="tool_call"){ setThinking(false);
+    const args = Object.entries(ev.args||{}).map(([k,v])=>`${k}=${JSON.stringify(v)}`).join(", ");
+    lastCall[ev.name] = addEl(`<details class="tool"><summary>🔧 <span class="fn">${esc(ev.name)}(${esc(args)})</span><span class="mut small">running…</span></summary></details>`) }
+  else if (ev.type==="tool_result"){ const el = lastCall[ev.name] || addEl(`<details class="tool"><summary>🔧 ${esc(ev.name)}<span class="mut small"></span></summary></details>`);
+    const d = el.querySelector("details"); d.querySelector(".mut").textContent = ev.n_images ? `✓ ${ev.n_images} image(s) (${ev.images.length?"shown":"not shown"})` : "✓ result";
+    d.insertAdjacentHTML("beforeend", `<pre>${esc(ev.text)}</pre>` + (ev.images||[]).map(u=>`<img class="thumb" src="${u}">`).join("")) }
+  else if (ev.type==="approval"){ setThinking(false);
+    addEl(`<div class="approval" id="ap_${ev.id}"><b>✏️ Your approval is needed for a write action</b>
+      <div class="fn" style="margin-top:6px">${esc(ev.name)}(${esc(JSON.stringify(ev.args))})</div>
+      <div class="small mut">Original files are not changed; output goes to the folder fixed in the config.</div>
+      <div class="row"><button class="pri" onclick="approve('${ev.id}',true)">Approve</button><button onclick="approve('${ev.id}',false)">Decline</button></div></div>`) }
+  else if (ev.type==="approval_done"){ const el = $("#ap_"+ev.id); if (el){ el.querySelectorAll("button").forEach(b=>b.disabled=true);
+      el.insertAdjacentHTML("beforeend", `<div class="small" style="margin-top:6px">${ev.ok?"✅ Approved, running…":(ev.reason==="timeout"?"⏱️ Timed out — declined":"❌ Declined")}</div>`) } }
+  else if (ev.type==="declined"){ addNote(`Blocked ${ev.name} (not approved)`) }
+  else if (ev.type==="answer"){ setThinking(false); addEl(md(ev.text), "a") }
+  else if (ev.type==="error"){ setThinking(false); addEl(`<span class="err">Error: ${esc(ev.text)}</span>`) }
+  else if (ev.type==="idle"){ setThinking(false); $("#send").disabled = false; loadReports() }
+}
+async function poll(){
+  polling = true;
+  while (SID){
+    const sid = SID;
+    try{ const r = await api(`/api/session/${sid}/events?since=${SINCE}&wait=20`);
+      if (sid !== SID) continue;
+      r.events.forEach(ev=>{ render(ev); SINCE = ev.i + 1 }); }
+    catch(e){ await new Promise(r=>setTimeout(r,2000)) }
+  }
+  polling = false;
+}
+async function send(){
+  const q = $("#q").value.trim(); if(!q || !SID) return;
+  $("#q").value = ""; $("#send").disabled = true;
+  try{ await api(`/api/session/${SID}/ask`, {method:"POST", body:JSON.stringify({question:q})}) }
+  catch(e){ addEl(`<span class="err">${esc(e.message)}</span>`); $("#send").disabled = false }
+}
+async function approve(id, ok){
+  try{ await api(`/api/session/${SID}/approve`, {method:"POST", body:JSON.stringify({id, ok})}) }catch(e){ alert(e.message) }
+}
+async function loadReports(){
+  if(!SID) return;
+  const r = await api(`/api/session/${SID}/reports`).catch(()=>[]);
+  $("#reports").innerHTML = r.length ? r.map(x=>`<a onclick="showReport('${esc(x.path)}','${esc(x.name)}')">📄 ${esc(x.name)}</a>`).join("") : `<span class="small mut">No reports yet</span>`;
+}
+async function showReport(path, name){
+  const t = await api(`/api/session/${SID}/report?path=`+encodeURIComponent(path));
+  $("#mtitle").textContent = name; $("#mbody").innerHTML = `<pre>${esc(t)}</pre>`; $("#mpick").style.display = "none";
+  $("#modal").classList.add("show");
+}
+$("#q").addEventListener("keydown", e=>{ if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); send() } });
+init();
+</script>
+</body>
+</html>

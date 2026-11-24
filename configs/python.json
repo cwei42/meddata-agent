@@ -1,0 +1,16 @@
+{
+  "model": {
+    "backend": "openai",
+    "url": "http://127.0.0.1:8080",
+    "temperature": 0.2,
+    "max_tokens": 2000,
+    "extra": {"chat_template_kwargs": {"enable_thinking": false}}
+  },
+  "toolsets": [
+    {"name": "dicom", "params": {"folder": "${folder}", "structure_names": "${structure_names:}",
+                                 "mha_output": "${mha_output:}"}},
+    {"name": "python", "params": {"folder": "${folder}", "work": "${work:}", "mha": "${mha_output:}"}}
+  ],
+  "system_prompt": "prompts/python.md",
+  "policy": {"max_steps": 10, "max_tool_calls": 16, "allow_write": true, "max_tool_output": 3000}
+}

@@ -1,0 +1,14 @@
+{
+  "model": {
+    "backend": "openai",
+    "url": "http://127.0.0.1:8080",
+    "temperature": 0.2,
+    "max_tokens": 600,
+    "extra": {"chat_template_kwargs": {"enable_thinking": false}}
+  },
+  "toolsets": [
+    {"name": "system"}
+  ],
+  "system_prompt": "prompts/system.md",
+  "policy": {"max_steps": 4}
+}

@@ -1,0 +1,87 @@
+#!/bin/bash
+# medical-vault: a NEW encrypted work space for every session; nothing is kept on the Orin.
+# Installed root-owned at /usr/local/sbin/medical-vault; meduser may run it with sudo (no password).
+#
+#   start         create a new encrypted space at /data/medical (random key, only in kernel memory)
+#   end [--force] destroy it: unmount, close (the key is gone = data unreadable), delete the file
+#                 --force: first stop programs that still use files in /data/medical
+#   status        active / none
+#   cleanup       delete leftovers of a session that was not ended (run at boot; key already gone)
+#
+# The key is 64 random bytes read once from /dev/urandom by cryptsetup (plain dm-crypt, AES-XTS-512): it is
+# never shown, never stored, and disappears on end, logout handling, reboot or power loss. Without the key the
+# container file is random data; it is deleted anyway to free the disk.
+set -u
+DIR=/var/lib/medical-vault
+IMG=$DIR/session.img
+NAME=medical
+MNT=/data/medical
+OWNER=${SUDO_USER:-meduser}
+MAX_GB=400            # upper limit of the space (sparse: only what is used takes disk space)
+RESERVE_GB=40         # always leave this much free on the system disk
+LOG() { logger -t medical-vault "$*"; }
+
+active() { [ -e "/dev/mapper/$NAME" ]; }
+
+close_all() {
+  if mountpoint -q "$MNT"; then
+    sync
+    if ! umount "$MNT"; then
+      if [ "${1:-}" = "--force" ]; then
+        fuser -km "$MNT" >/dev/null 2>&1; sleep 1; umount "$MNT" || umount -l "$MNT"
+      else
+        echo "cannot end: files in $MNT are still in use:"; fuser -vm "$MNT" 2>&1 | tail -n +2
+        echo "close them (or: medical-vault end --force)"; return 1
+      fi
+    fi
+  fi
+  active && cryptsetup close "$NAME"
+  return 0
+}
+
+case "${1:-status}" in
+  start)
+    if active; then echo "a session is already active: $MNT"; exit 0; fi
+    rm -f "$IMG"                                       # leftover of an earlier session (unreadable anyway)
+    mkdir -p "$DIR" && chmod 700 "$DIR"
+    free_gb=$(( $(df --output=avail -B1G "$DIR" | tail -1) - RESERVE_GB ))
+    size_gb=$(( free_gb < MAX_GB ? free_gb : MAX_GB ))
+    [ "$size_gb" -ge 10 ] || { echo "not enough free disk space for a session ($free_gb GB)"; exit 1; }
+    truncate -s "${size_gb}G" "$IMG" && chmod 600 "$IMG"
+    if ! cryptsetup open --type plain --cipher aes-xts-plain64 --key-size 512 \
+         --key-file /dev/urandom "$IMG" "$NAME"; then
+      rm -f "$IMG"; echo "could not create the encrypted space"; exit 1
+    fi
+    # few inodes (1 per 256 KB) and initialised now, so the sparse file only grows with real data
+    mkfs.ext4 -q -L medical -m 0 -i 262144 -J size=256 -E lazy_itable_init=0,lazy_journal_init=0,nodiscard \
+      "/dev/mapper/$NAME" || { close_all; rm -f "$IMG"; echo "mkfs failed"; exit 1; }
+    mkdir -p "$MNT"
+    mount -o nodev,nosuid,noexec "/dev/mapper/$NAME" "$MNT"
+    chown "$OWNER:$OWNER" "$MNT" && chmod 700 "$MNT"
+    rmdir "$MNT/lost+found" 2>/dev/null
+    LOG "session started by $OWNER (${size_gb} GB, random key)"
+    echo "new encrypted session space ready: $MNT (${size_gb} GB max, destroyed at end)"
+    ;;
+  end)
+    if ! active && ! mountpoint -q "$MNT"; then rm -f "$IMG"; echo "no active session"; exit 0; fi
+    close_all "${2:-}" || exit 1
+    rm -f "$IMG"
+    LOG "session ended by $OWNER - key destroyed, data unrecoverable"
+    echo "session ended: key destroyed, all data of this session is gone"
+    ;;
+  status)
+    if active && mountpoint -q "$MNT"; then
+      echo "active"; df -h "$MNT" | tail -1
+    else
+      echo "none"
+    fi
+    ;;
+  cleanup)
+    if ! active; then
+      [ -e "$IMG" ] && { rm -f "$IMG"; LOG "boot cleanup: leftover session file removed (key was lost)"; }
+    fi
+    ;;
+  *)
+    echo "usage: medical-vault start | end [--force] | status | cleanup"; exit 2
+    ;;
+esac

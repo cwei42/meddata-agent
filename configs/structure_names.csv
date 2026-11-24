@@ -1,0 +1,4 @@
+# Clinic mapping: original ROI name -> TG-263 name. These rows win over the built-in rules.
+# Matching ignores case, spaces, _ - . and umlauts ("Parotis li" = "parotis_li" = "PAROTIS-LI").
+# Add rows from structure_names_unmapped.csv (written by the MHA export / dicom_structures.py).
+original,standard

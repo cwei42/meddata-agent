@@ -1,0 +1,14 @@
+{
+  "model": {
+    "backend": "openai",
+    "url": "http://127.0.0.1:8080",
+    "temperature": 0.2,
+    "max_tokens": 1200,
+    "extra": {"chat_template_kwargs": {"enable_thinking": false}}
+  },
+  "toolsets": [
+    {"name": "dicom", "params": {"folder": "${folder}", "output": "${output:}", "anon_output": "${anon_output:}", "mha_output": "${mha_output:}"}}
+  ],
+  "system_prompt": "prompts/dicom.md",
+  "policy": {"max_steps": 6, "max_tool_calls": 12, "allow_write": true}
+}

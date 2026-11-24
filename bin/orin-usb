@@ -1,0 +1,56 @@
+#!/bin/bash
+# orin-usb: mount USB drives for import (read-only) / export (read-write). Only USB block devices.
+# Installed root-owned at /usr/local/sbin/orin-usb (sudo without password for meduser).
+#   list                      USB partitions (path, size, fs, label, mounted at)
+#   mount  /dev/sdXN [rw]     mount at /media/orin-usb/<name>  (read-only unless "rw")
+#   unmount /dev/sdXN         unmount (and power off the drive if nothing else is mounted)
+set -u
+BASE=/media/orin-usb
+OWNER=${SUDO_USER:-meduser}
+
+is_usb_part() {   # $1 = /dev/sdXN ; must be a partition on a USB disk
+  local dev=$1 tran
+  [[ "$dev" =~ ^/dev/sd[a-z]+[0-9]*$ ]] || return 1
+  local disk; disk=$(lsblk -no PKNAME "$dev" 2>/dev/null | head -1); [ -z "$disk" ] && disk=$(basename "$dev")
+  tran=$(lsblk -dno TRAN "/dev/$disk" 2>/dev/null)
+  [ "$tran" = usb ]
+}
+
+case "${1:-list}" in
+  list)
+    lsblk -prno PATH,SIZE,FSTYPE,LABEL,MOUNTPOINT,TYPE,TRAN 2>/dev/null | awk '
+      $6=="disk"{usb[$1]=($7=="usb")} $6=="part"{print}' | while read -r path size fs label mnt _; do
+        is_usb_part "$path" && [ -n "$fs" ] && echo "$path|$size|$fs|$label|$mnt"
+      done
+    exit 0
+    ;;
+  mount)
+    dev=${2:-}; mode=${3:-ro}
+    is_usb_part "$dev" || { echo "not a USB partition: $dev"; exit 1; }
+    fs=$(lsblk -no FSTYPE "$dev")
+    [ "$fs" = BitLocker ] && { echo "BitLocker-encrypted drive: not supported yet"; exit 1; }
+    name=$(lsblk -no LABEL "$dev" | tr -c 'A-Za-z0-9._-\n' '_'); [ -z "$name" ] && name=$(basename "$dev")
+    mnt="$BASE/$name"; mkdir -p "$mnt"
+    mountpoint -q "$mnt" && { echo "$mnt"; exit 0; }
+    opts="nosuid,nodev,noexec"; [ "$mode" = rw ] || opts="$opts,ro"
+    uid=$(id -u "$OWNER"); gid=$(id -g "$OWNER")
+    case "$fs" in
+      vfat|exfat|ntfs|ntfs3) opts="$opts,uid=$uid,gid=$gid,umask=077" ;;
+    esac
+    [ "$fs" = ntfs ] && fs=ntfs3
+    mount -t "$fs" -o "$opts" "$dev" "$mnt" || { rmdir "$mnt" 2>/dev/null; echo "mount failed"; exit 1; }
+    echo "$mnt"
+    ;;
+  unmount)
+    dev=${2:-}
+    is_usb_part "$dev" || { echo "not a USB partition: $dev"; exit 1; }
+    sync
+    for m in $(lsblk -no MOUNTPOINT "$dev"); do umount "$m" && rmdir "$m" 2>/dev/null; done
+    disk=$(lsblk -no PKNAME "$dev" | head -1)
+    if [ -n "$disk" ] && ! lsblk -no MOUNTPOINT "/dev/$disk" | grep -q .; then
+      udisksctl power-off -b "/dev/$disk" --no-user-interaction >/dev/null 2>&1
+    fi
+    echo "unmounted - safe to unplug"
+    ;;
+  *) echo "usage: orin-usb list | mount /dev/sdXN [rw] | unmount /dev/sdXN"; exit 2 ;;
+esac

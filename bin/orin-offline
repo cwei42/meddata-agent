@@ -1,0 +1,65 @@
+#!/bin/bash
+# orin-offline: switch ALL networking off/on for processing patient data, and verify the state.
+# Installed root-owned at /usr/local/sbin/orin-offline (sudo without password for meduser).
+#   on      wifi, ethernet, bluetooth, tailscale, USB-C network, docker network -> off
+#   off     restore networking
+#   status  verified state (exit 0 = offline)
+#   test N  go offline, automatically back online after N seconds (for remote testing)
+LOG=/var/log/orin-offline.log
+WHO=${SUDO_USER:-$(id -un)}
+log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
+
+check() {   # prints problems; returns 0 if fully offline
+  local bad=0
+  if [ "$(nmcli -t radio wifi 2>/dev/null)" = "enabled" ]; then echo "  wifi radio: on"; bad=1; fi
+  if [ "$(nmcli -t networking 2>/dev/null)" = "enabled" ]; then echo "  networkmanager: on"; bad=1; fi
+  if rfkill list bluetooth 2>/dev/null | grep -q "Soft blocked: no"; then echo "  bluetooth: on"; bad=1; fi
+  if systemctl is-active -q tailscaled; then echo "  tailscale: running"; bad=1; fi
+  for i in $(ip -o link show up | awk -F': ' '{print $2}' | cut -d@ -f1); do
+    [ "$i" = lo ] && continue
+    if ip -o link show "$i" | grep -q "LOWER_UP"; then echo "  interface up: $i"; bad=1; fi
+  done
+  # only addresses on interfaces that are UP can communicate (down bridges keep their address)
+  local addrs; addrs=$(ip -4 -o addr show scope global up | awk '{print $2" "$4}')
+  [ -n "$addrs" ] && { echo "  IPv4 addresses: $addrs" | tr '\n' ' '; echo; bad=1; }
+  ip route show default | grep -q . && { echo "  default route present"; bad=1; }
+  return $bad
+}
+
+go_offline() {
+  nmcli networking off 2>/dev/null
+  nmcli radio all off 2>/dev/null
+  rfkill block all
+  # stop the daemon only; "tailscale down" would be remembered and keep Tailscale off after going online
+  systemctl stop tailscaled 2>/dev/null
+  systemctl stop nv-l4t-usb-device-mode 2>/dev/null
+  for i in l4tbr0 usb0 usb1 docker0 enP8p1s0 wlP1p1s0 tailscale0; do ip link set "$i" down 2>/dev/null; done
+  sleep 1
+  if check >/dev/null; then log "OFFLINE (verified) by $WHO"; echo "OFFLINE ✓ (verified)";
+  else log "OFFLINE requested by $WHO but check failed"; echo "WARNING - not fully offline:"; check; return 1; fi
+}
+
+go_online() {
+  rfkill unblock all
+  nmcli radio all on 2>/dev/null
+  nmcli networking on 2>/dev/null
+  for i in l4tbr0 usb0 usb1 docker0; do ip link set "$i" up 2>/dev/null; done
+  systemctl start nv-l4t-usb-device-mode 2>/dev/null
+  systemctl start tailscaled 2>/dev/null
+  log "ONLINE by $WHO"
+  echo "online again (WiFi/Tailscale may need ~30 s to reconnect)"
+}
+
+case "${1:-status}" in
+  on) go_offline ;;
+  off) go_online ;;
+  status) if check >/dev/null; then echo "OFFLINE ✓"; exit 0; else echo "ONLINE"; check; exit 1; fi ;;
+  test)
+    n=${2:-60}; [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -le 600 ] || { echo "test N: 1..600 s"; exit 2; }
+    log "TEST: offline for $n s requested by $WHO"
+    setsid bash -c "'$0' on > /tmp/orin-offline-test.txt 2>&1; '$0' status >> /tmp/orin-offline-test.txt 2>&1; sleep $n; '$0' off >> /tmp/orin-offline-test.txt 2>&1" < /dev/null > /dev/null 2>&1 &
+    echo "going offline now, back online in $n s (result in /tmp/orin-offline-test.txt)"
+    ;;
+  log) tail -n 30 "$LOG" 2>/dev/null ;;
+  *) echo "usage: orin-offline on|off|status|test N|log"; exit 2 ;;
+esac
