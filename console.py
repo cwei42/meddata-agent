@@ -63,9 +63,19 @@ def session_start():
     return vault_unlocked()
 
 
+def run_script(name, *args):
+    """bin/<name> via bash, so a lost executable bit (e.g. a checkout from Windows) cannot break it."""
+    return subprocess.run(["bash", os.path.join(HERE, "bin", name), *args])
+
+
 def session_end(force=False):
-    if model_running():
-        subprocess.run([os.path.join(HERE, "bin", "llm-stop.sh")])   # the model must not hold files open
+    # Stopping the model must never prevent the destruction below: an exception here once left the session
+    # space open after the console was closed.
+    try:
+        if model_running():
+            run_script("llm-stop.sh")                                # the model must not hold files open
+    except Exception as e:
+        c.print(f"[yellow]could not stop the model ({e}) - ending the session anyway[/]")
     os.chdir(HERE)
     r = sh(VAULT_CMD + ["end"] + (["--force"] if force else []))
     c.print(r.stdout.strip() or r.stderr.strip())
@@ -387,7 +397,7 @@ def ensure_model():
     if model_running():
         return True
     size = Prompt.ask("Start model", choices=["4b", "2b"], default="4b")
-    subprocess.run([os.path.join(HERE, "bin", "llm-start.sh"), size])
+    run_script("llm-start.sh", size)
     return model_running()
 
 
@@ -550,7 +560,7 @@ def act_quit():
         if vault_unlocked():
             c.print("[red]Session space could NOT be destroyed - it will be gone at the next reboot.[/]")
     elif model_running():
-        subprocess.run([os.path.join(HERE, "bin", "llm-stop.sh")])
+        run_script("llm-stop.sh")
     off, _ = offline_state()
     if off and Confirm.ask("Go back online (WiFi/Tailscale)?", default=False):
         act_offline(False)
@@ -562,8 +572,14 @@ def on_hangup(signum, frame):
     try:
         if vault_unlocked():
             session_end(force=True)
+    except Exception:
+        pass
     finally:
-        os._exit(0)
+        try:                                   # last resort: destroy directly, whatever failed above
+            if vault_unlocked():
+                sh(VAULT_CMD + ["end", "--force"])
+        finally:
+            os._exit(0)
 
 
 IDLE = {"waiting": False, "since": time.time()}

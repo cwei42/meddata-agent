@@ -180,7 +180,8 @@ def model_action(action: str, size: str = "4b"):
     if action not in ("start", "stop") or size not in ("4b", "2b"):
         raise HTTPException(400, "bad action")
     script = os.path.join(ROOT, "bin", "llm-start.sh" if action == "start" else "llm-stop.sh")
-    p = subprocess.run([script] + ([size] if action == "start" else []), capture_output=True, text=True, timeout=180)
+    p = subprocess.run(["bash", script] + ([size] if action == "start" else []), capture_output=True, text=True,
+                       timeout=180)
     return {"ok": p.returncode == 0, "output": (p.stdout + p.stderr).strip()[-500:]}
 
 
