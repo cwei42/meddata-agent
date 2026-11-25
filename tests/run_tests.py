@@ -276,6 +276,20 @@ GERMAN_NAMES = {   # clinical German names seen at LMU -> expected TG-263 name
 }
 
 
+def test_cli():
+    """Every command-line tool in cli/ starts (imports resolve from the repo root) and shows its help."""
+    import subprocess
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    bad = []
+    for f in sorted(os.listdir(os.path.join(root, "cli"))):
+        if f.endswith(".py"):
+            p = subprocess.run([sys.executable, os.path.join(root, "cli", f), "--help"], capture_output=True,
+                               text=True, cwd="/tmp" if os.path.isdir("/tmp") else None, timeout=120)
+            if p.returncode != 0 or "usage" not in p.stdout.lower():
+                bad.append(f"{f}: {(p.stderr or p.stdout).strip().splitlines()[-1:]}")
+    check("cli: all command-line tools start and show --help", not bad, "; ".join(bad))
+
+
 def test_harness_text():
     from harness.core import TOOLS_NOTE
     a = "Report text.\n[tools used for this answer: list_series, resample_images, export_mha]"
@@ -323,7 +337,7 @@ def main():
                      ("layout", lambda: test_layout(tmp)), ("structures", test_structures),
                      ("German structure names", test_german_names),
                      ("anonymizer: empty attributes", test_empty_stays_empty),
-                     ("harness", test_harness_text)]:
+                     ("harness", test_harness_text), ("command-line tools", test_cli)]:
         print(f"\n[{name}]")
         try:
             fn()

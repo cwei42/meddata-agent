@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-dicom_organize.py - copy a messy DICOM folder into Patient/Study/Series folders (no LLM needed).
+organize.py - copy a messy DICOM folder into Patient/Study/Series folders (no LLM needed).
 
-  python dicom_organize.py INPUT [-o OUTPUT] [--yes] [--show-phi]
+  python cli/organize.py INPUT [-o OUTPUT] [--yes] [--show-phi]
 
 Shows the plan first and asks before copying. Originals are never changed.
 Default output: <INPUT>_organized next to the input.
@@ -11,7 +11,7 @@ import argparse
 import os
 import sys
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # repo root
 sys.path.insert(0, HERE)
 
 from toolsets.dicom import layout as L     # noqa: E402

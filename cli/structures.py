@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """
-structure_tools.py - work with structures (RTSTRUCT masks) and MHA images of a DICOM dataset, no model needed.
-Needs the MHA export first (dicom_to_mha.py). Results go to <case>/structures/<patient>/ (never overwritten).
+structures.py - work with structures (RTSTRUCT masks) and MHA images of a DICOM dataset, no model needed.
+Needs the MHA export first (cli/to_mha.py). Results go to <case>/structures/<patient>/ (never overwritten).
 
-  python structure_tools.py DATASET list
-  python structure_tools.py DATASET stats   "GTV*"
-  python structure_tools.py DATASET compare "GTV" "GTVn 1"                # Dice, Jaccard, HD95, mean surface dist.
-  python structure_tools.py DATASET values  "PTV" [--image P001-S01-04] [--v 20,30]   # HU or dose (D95, V20...)
-  python structure_tools.py DATASET dvh     "PTV,Heart" --dose P001-S01-04
-  python structure_tools.py DATASET merge   "GTV*" --name GTV_all [--op union|intersection|minus] [--margin 5]
-  python structure_tools.py DATASET margin  "GTV" --mm 5 [--name GTV+5mm]       # --mm -3 shrinks, --mm 5,5,10 x,y,z
-  python structure_tools.py DATASET labelmap "GTV=GTV*" "PTV=PTV" [--name labels]   # later label wins on overlap
-  python structure_tools.py DATASET crop    "PTV" --margin 20                   # image + all masks around PTV
-  python structure_tools.py DATASET resample --spacing 1,1,1
+  python cli/structures.py DATASET list
+  python cli/structures.py DATASET stats   "GTV*"
+  python cli/structures.py DATASET compare "GTV" "GTVn 1"                # Dice, Jaccard, HD95, mean surface dist.
+  python cli/structures.py DATASET values  "PTV" [--image P001-S01-04] [--v 20,30]   # HU or dose (D95, V20...)
+  python cli/structures.py DATASET dvh     "PTV,Heart" --dose P001-S01-04
+  python cli/structures.py DATASET merge   "GTV*" --name GTV_all [--op union|intersection|minus] [--margin 5]
+  python cli/structures.py DATASET margin  "GTV" --mm 5 [--name GTV+5mm]       # --mm -3 shrinks, --mm 5,5,10 x,y,z
+  python cli/structures.py DATASET labelmap "GTV=GTV*" "PTV=PTV" [--name labels]   # later label wins on overlap
+  python cli/structures.py DATASET crop    "PTV" --margin 20                   # image + all masks around PTV
+  python cli/structures.py DATASET resample --spacing 1,1,1
 
 Select structures by TG-263 name, original name or glob ("GTV*", "Parotid_?"), several with ",".
 Helper structures (z..., ring, opt) are left out of globs. --patient P001 limits to one patient.
@@ -22,7 +22,7 @@ import argparse
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # repo root
 from toolsets.dicom import layout as L                    # noqa: E402
 from toolsets.dicom import mha_tools as T                 # noqa: E402
 from toolsets.dicom import structure_ops as OPS           # noqa: E402

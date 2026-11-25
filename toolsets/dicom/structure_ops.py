@@ -1,4 +1,4 @@
-"""High-level structure operations on an MHA export (shared by structure_tools.py and the agent tools).
+"""High-level structure operations on an MHA export (shared by cli/structures.py and the agent tools).
 
 Every function works per patient (all patients, or one with patient=...), writes only into out_dir
 (default <dataset>_derived), never overwrites, and returns a text report. Results that are files get a JSON

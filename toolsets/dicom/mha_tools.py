@@ -1,4 +1,4 @@
-"""Structure / MHA toolkit (deterministic, SimpleITK + numpy). Works on an MHA export folder (dicom_to_mha.py)
+"""Structure / MHA toolkit (deterministic, SimpleITK + numpy). Works on an MHA export folder (cli/to_mha.py)
 or on plain image/mask files.
 
     ex = Export("/data/x_mha")                      # reads structures.json + image sidecars

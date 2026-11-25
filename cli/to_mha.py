@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """
-dicom_to_mha.py - export image series and RTSTRUCTs to MHA with plastimatch.
+to_mha.py - export image series and RTSTRUCTs to MHA with plastimatch.
 
-  python dicom_to_mha.py INPUT [-o OUTPUT] [--ref REF | --ref RTSTRUCT_ID=REF ...] [--only ID ...] [--yes]
+  python cli/to_mha.py INPUT [-o OUTPUT] [--ref REF | --ref RTSTRUCT_ID=REF ...] [--only ID ...] [--yes]
 
 REF = a series id from the scan (e.g. P001-S01-02), a DICOM folder, or an image file (.mha/.nii/.nrrd).
   --ref REF              use REF for every RTSTRUCT
   --ref P001-S01-05=REF  use REF for this RTSTRUCT only
 Without --ref the referenced CT/MR is found automatically (RTReferencedSeriesSequence, then FrameOfReferenceUID).
 Use --list to see series ids first.
-Mask files are named by AAPM TG-263 (see dicom_structures.py); --original-names keeps the original names.
+Mask files are named by AAPM TG-263 (see cli/structure_names.py); --original-names keeps the original names.
 """
 import argparse
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # repo root
 from toolsets.dicom import export_mha as E                # noqa: E402
 from toolsets.dicom import organize as O                  # noqa: E402
 from toolsets.dicom.common import Scanned, confirm        # noqa: E402

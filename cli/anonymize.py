@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-dicom_anonymize.py - anonymized DICOM copy in a clean Patient/Study/Series structure.
+anonymize.py - anonymized DICOM copy in a clean Patient/Study/Series structure.
 
-  python dicom_anonymize.py INPUT [-o OUTPUT] [--seed SECRET] [--keep-private] [--write-mapping] [--yes]
+  python cli/anonymize.py INPUT [-o OUTPUT] [--seed SECRET] [--keep-private] [--write-mapping] [--yes]
 
 Uses dicognito (names, IDs, dates shifted consistently, UIDs remapped) plus extra rules
 (free-text masking, device/physician fields, private tags). Every output file is re-checked.
@@ -12,7 +12,7 @@ import argparse
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # repo root
 from toolsets.dicom import anonymize as A                 # noqa: E402
 from toolsets.dicom import organize as O                  # noqa: E402
 from toolsets.dicom.common import Scanned, confirm        # noqa: E402

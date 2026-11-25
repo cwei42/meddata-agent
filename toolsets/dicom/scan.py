@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-dicom_scan.py - Understand the structure of a messy DICOM folder.
+scan.py - Understand the structure of a messy DICOM folder.
 
 Walks a folder recursively, finds every DICOM file regardless of file name or
 extension, reads only the headers (no pixel data), and groups the files into
@@ -17,7 +17,7 @@ Privacy defaults:
   * Use --show-phi only when the output stays on approved storage.
 
 Usage:
-  python dicom_scan.py INPUT_DIR [-o OUTPUT_DIR] [--llm] [--llm-url URL] [--show-phi]
+  python cli/report.py INPUT_DIR [-o OUTPUT_DIR] [--llm] [--llm-url URL] [--show-phi]
 """
 import argparse
 import csv

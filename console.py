@@ -110,7 +110,7 @@ def header():
         f"[green]Session space active{vfree}[/]" if v else "[yellow]No session space[/]",
         "[green]Model running[/]" if model_running() else "[dim]Model stopped[/]",
         f"[dim]RAM free {mem_free_mb()} MB[/]")
-    c.print(Panel(t, title="[bold]Orin offline console[/]",
+    c.print(Panel(t, title=f"[bold]Orin offline console[/] [dim]v{L.version()}[/]",
                   border_style="green" if off else "magenta" if TEST["on"] else "red"))
 
 
@@ -469,30 +469,35 @@ def act_tool():
     if not ds:
         return
     t = pick("Tool (no model needed)", [
-        ("Structure report (HTML/CSV)", ["toolsets/dicom/scan.py", L.input_dir(ds), "-o", L.out(ds, "report")]),
-        ("Organize (copy into Patient/Study/Series)", ["dicom_organize.py", ds]),
-        ("Anonymize (DICOM copy)", ["dicom_anonymize.py", ds]),
-        ("Export to MHA (+ RTSTRUCT masks)", ["dicom_to_mha.py", ds]),
+        ("Structure report (HTML/CSV)", ["report.py", L.input_dir(ds), "-o", L.out(ds, "report")]),
+        ("Organize (copy into Patient/Study/Series)", ["organize.py", ds]),
+        ("Anonymize (DICOM copy)", ["anonymize.py", ds]),
+        ("Export to MHA (+ RTSTRUCT masks)", ["to_mha.py", ds]),
         ("Structure tools (merge, margin, stats, Dice, dose, labels, crop)", None),
     ], lambda x: x[0])
     if t and t[1] is None:
         act_structures(ds)
-    elif t and t[1][0] == "dicom_to_mha.py":
+    elif t and t[1][0] == "to_mha.py":
         m = pick("Put the structure masks on", [
             ("auto", "the image each structure set refers to (recommended)"),
             ("CT", "the CT of the same plan"), ("MR", "the MR of the same plan")], lambda x: f"{x[0]:5} {x[1]}")
         if m:
-            subprocess.run([PY, os.path.join(HERE, "dicom_to_mha.py"), ds, "--ref-modality", m[0]], cwd=HERE)
+            run_cli("to_mha.py", ds, "--ref-modality", m[0])
     elif t:
-        subprocess.run([PY, os.path.join(HERE, t[1][0])] + t[1][1:], cwd=HERE)
+        run_cli(*t[1])
+
+
+def run_cli(script, *args):
+    """A command-line tool from cli/ (the same tools you can run by hand)."""
+    return subprocess.run([PY, os.path.join(HERE, "cli", script), *args], cwd=HERE)
 
 
 def act_structures(ds):
-    """structure_tools.py with a few questions instead of a command line."""
+    """cli/structures.py with a few questions instead of a command line."""
     if not os.path.isdir(L.out(ds, "mha")):
         c.print("[yellow]No MHA export yet - run 'Export to MHA' first.[/]")
         return
-    run = lambda *a: subprocess.run([PY, os.path.join(HERE, "structure_tools.py"), ds, *a], cwd=HERE)
+    run = lambda *a: run_cli("structures.py", ds, *a)
     run("list")
     t = pick("Structure tool", [
         ("stats    - volume, centroid, extent", "stats"), ("compare  - Dice, HD95 between two", "compare"),

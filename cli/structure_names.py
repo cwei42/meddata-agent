@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-dicom_structures.py - list RTSTRUCT structure names and their TG-263 names (nothing is changed).
+structure_names.py - list RTSTRUCT structure names and their TG-263 names (nothing is changed).
 
-  python dicom_structures.py INPUT [--map FILE.csv] [--unmapped OUT.csv] [--all]
+  python cli/structure_names.py INPUT [--map FILE.csv] [--unmapped OUT.csv] [--all]
 
   --map       mapping file original,standard (default configs/structure_names.csv; its rows win)
   --unmapped  write names that could not be mapped to this CSV, to fill in and add to the mapping file
@@ -12,7 +12,7 @@ import argparse
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # repo root
 from toolsets.dicom import structnames as N               # noqa: E402
 from toolsets.dicom.common import Scanned                 # noqa: E402
 
