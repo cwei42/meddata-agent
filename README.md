@@ -73,7 +73,9 @@ q Quit = destroy the session space (asks first), stop model, optionally back onl
 - `orin-usb list|mount DEV [rw]|unmount DEV` (sudo, no password): USB drives only; **read-only** for
   import, read-write only for export; unmount powers the drive off. BitLocker drives not supported yet.
 - **offline required:** import, tools, agent and export refuse to run unless the Orin is verified offline
-  (`ORIN_ALLOW_ONLINE=1` only for tests with non-patient data); agent write actions need `y` like everywhere else
+  - except in **test mode** for anonymized or synthetic data: menu 8 (type `TEST` to confirm) or
+  `orin-console --test`; the header turns magenta, every switch is logged (`journalctl -t orin-console`),
+  and it is off again at the next start. Agent write actions need `y` like everywhere else
 - **idle = destroyed:** no input for 30 min at a console prompt (`ORIN_IDLE_MIN`) destroys the session space and
   exits; an idle shell on the Orin's screen logs out after 30 min (`TMOUT`), and that logout destroys it too
 - **case names:** default `case-YYYYMMDD-NN`; a name equal to the drive's folder name needs confirmation, and a
@@ -167,15 +169,21 @@ Output `<case>/anonymized/` (Patient/Study/Series, no years in folder names) + `
 ```bash
 ~/dicom-env/bin/python dicom_to_mha.py /path/to/dicom --list                    # see series ids
 ~/dicom-env/bin/python dicom_to_mha.py /path/to/dicom                           # reference found automatically
-~/dicom-env/bin/python dicom_to_mha.py /path/to/dicom --ref P001-S01-02          # this CT for all RTSTRUCTs
+~/dicom-env/bin/python dicom_to_mha.py /path/to/dicom --ref-modality CT        # masks on the CT of each plan
+~/dicom-env/bin/python dicom_to_mha.py /path/to/dicom --ref-modality MR        # masks on the MR of each plan
+~/dicom-env/bin/python dicom_to_mha.py /path/to/dicom --ref P001-S01-02          # fallback if a reference is missing
 ~/dicom-env/bin/python dicom_to_mha.py /path/to/dicom --ref P001-S01-05=/data/ct.mha   # per RTSTRUCT, image file
 ```
 Output `<case>/mha/`: `<series>.mha` + `<series>.json` (safe technical parameters only),
 `<rtstruct>/<structure>.mha` (one binary mask per ROI on the reference grid) + `structures.json`, and
 `export_report.txt` (exported / skipped with reason / failed).
 
-- reference for RTSTRUCT: `--ref` (series id, DICOM folder or image file) → else the series named in the
-  RTSTRUCT (RTReferencedSeriesSequence) → else same FrameOfReferenceUID (CT preferred)
+- reference for RTSTRUCT, in this order: `--ref ID=…` for that RTSTRUCT → `--ref-modality CT|MR` (that modality
+  from the RTSTRUCT's own plan folder; several candidates are listed in the report) → the series named in the
+  RTSTRUCT (RTReferencedSeriesSequence) → `--ref X` for all (only a fallback, never overrides the named series)
+  → same FrameOfReferenceUID (CT preferred). A reference other than the named series must share its
+  FrameOfReferenceUID; where the UIDs differ per slice (some anonymizers) this cannot be checked and the report says so
+- anonymizer: attributes that were empty stay empty and none are added (dicognito would invent a clinic and address)
 - MHA headers are rewritten to geometry keys only; JSON has no dates, UIDs or names
 - skipped: localizers, US/screenshots/reports, series with several images per slice position (4D, multi-echo, DWI)
 - plastimatch is built from source in `~/opt/plastimatch` (ITK 5.3 in `~/opt/itk`), without CUDA

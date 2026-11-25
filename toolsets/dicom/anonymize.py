@@ -121,7 +121,23 @@ def anonymize_dataset(ds, anonymizer, keep_private=False):
     toks = _identifiers(ds)
     risky = (S.s(ds, "BurnedInAnnotation").upper() == "YES" or S.s(ds, "Modality") in RISKY_MODALITIES
              or S.s(ds, "SOPClassUID") in RISKY_SOP)
+    # dicognito fills some EMPTY attributes with invented values (e.g. an empty InstitutionName becomes a
+    # fake clinic) - that looks like real data and misleads. Remember them and empty them again afterwards.
+    # PatientName/PatientID keep the pseudonym (a consistent ID is needed to group the files).
+    # It also ADDS attributes (an InstitutionAddress next to the invented clinic): those are removed again.
+    keep = ("PatientName", "PatientID")
+    was_empty = [(sub, el.tag) for sub in _walk(ds) for el in sub
+                 if el.VR != "SQ" and el.is_empty and el.keyword not in keep]
+    before = [(sub, set(sub.keys())) for sub in _walk(ds)]
     anonymizer.anonymize(ds)
+    for sub, tag in was_empty:
+        if tag in sub and sub[tag].VR != "SQ" and not sub[tag].is_empty:
+            sub[tag].value = ""
+    for sub, tags in before:
+        for tag in set(sub.keys()) - tags:
+            el = sub[tag]
+            if el.VR != "SQ" and el.keyword not in keep and tag.group != 0x0012:   # 0012: de-identification info
+                del sub[tag]
     for sub in _walk(ds):                      # also inside sequences (e.g. RT plan beam sequence)
         for kw in EXTRA_EMPTY:
             if kw in sub:

@@ -26,6 +26,9 @@ def main():
     ap.add_argument("input")
     ap.add_argument("-o", "--output")
     ap.add_argument("--ref", action="append", default=[], help="reference image for RTSTRUCT (see above)")
+    ap.add_argument("--ref-modality", choices=["auto", "CT", "MR"], default="auto",
+                    help="reference image for RTSTRUCT masks: auto = the series each RTSTRUCT names, "
+                         "CT / MR = that modality from the same plan folder")
     ap.add_argument("--only", nargs="+", help="export only these series ids")
     ap.add_argument("--list", action="store_true", help="list series ids and exit")
     ap.add_argument("--names-map", help="structure name mapping CSV (default configs/structure_names.csv)")
@@ -50,13 +53,16 @@ def main():
     print(E.describe(rows, out))
     if refs:
         print("references:", ", ".join(f"{k} -> {v}" for k, v in refs.items()))
+    print("structure masks on:", "the series each RTSTRUCT names" if args.ref_modality == "auto"
+          else f"the {args.ref_modality} of the same plan")
     if not E.available():
         sys.exit(f"plastimatch not found at {E.PLASTIMATCH}")
     if not confirm("Export now?", args.yes):
         sys.exit("nothing written")
     only = set(args.only) | set(v for v in refs.values() if v in {r["id"] for r in sc.rows}) if args.only else None
     r = E.run(sc.root, out, sc.res, sc.tree, sc.rows, sc.files, references=refs, redact=sc.redact, only=only,
-              standard_names=not args.original_names, mapping_path=args.names_map)
+              standard_names=not args.original_names, mapping_path=args.names_map,
+              reference_modality=None if args.ref_modality == "auto" else args.ref_modality)
     print(f"\nimages: {r['images']}, RTSTRUCTs: {r['rtstructs']}, skipped: {r['skipped']}, failed: {len(r['failed'])}")
     for x in r["rt_details"]:
         print("  RT:", x)

@@ -225,27 +225,37 @@ def setup(params):
 
     @tool("export_mha",
           f"Convert image series to MHA and RTSTRUCTs to one MHA mask per structure (plastimatch), into {mha_dir}. "
-          "The reference image for RTSTRUCT masks is found automatically; to choose it, pass reference_series_id "
-          "(an image series id from list_series). dry_run=true shows the plan; dry_run=false writes "
-          "(the user will be asked to approve).",
+          "Each RTSTRUCT is put on the image series it references (found automatically) - normally leave "
+          "reference_series_id out. reference_modality='CT' or 'MR' puts the masks on the CT or MR of the same "
+          "plan instead (use it when the user asks for CT or MR). Pass reference_series_id only when the export "
+          "says a reference was not found. dry_run=true shows the plan; dry_run=false writes (the user will be "
+          "asked to approve).",
           {"type": "object", "properties": {
               "dry_run": {"type": "boolean", "description": "true = only show plan"},
-              "reference_series_id": {"type": "string", "description": "optional image series id used as "
-                                                                       "reference grid for all RTSTRUCTs"}}},
+              "reference_modality": {"type": "string", "enum": ["auto", "CT", "MR"],
+                                     "description": "auto (default) = the series each RTSTRUCT names; CT or MR = "
+                                                    "that modality from the same plan folder"},
+              "reference_series_id": {"type": "string", "description": "optional fallback image series id, used "
+                                      "only for RTSTRUCTs whose own referenced series is missing"}}},
           read_only=False, safe_when=lambda a: a.get("dry_run", True) is not False)
-    def export_mha(dry_run=True, reference_series_id=None):
+    def export_mha(dry_run=True, reference_series_id=None, reference_modality="auto"):
         if reference_series_id and reference_series_id not in by_id:
             return f"unknown series id {reference_series_id}"
+        mod = (reference_modality or "auto").upper().replace("MRI", "MR")
+        if mod not in ("AUTO", "CT", "MR"):
+            return "reference_modality must be auto, CT or MR"
         refs = {"*": reference_series_id} if reference_series_id else {}
         err = O.check_output(root, mha_dir)
         if dry_run is not False:
-            return E.describe(rows, mha_dir) + (f"\nreference for RTSTRUCT: {reference_series_id}" if refs else
-                                                "\nreference for RTSTRUCT: automatic") + \
+            return E.describe(rows, mha_dir) + \
+                f"\nreference for RTSTRUCT: {'each its own series' if mod == 'AUTO' else mod + ' of the same plan'}" + \
+                (f" (fallback {reference_series_id})" if refs else "") + \
                 (f"\nWARNING: {err}" if err else "\n(dry run - nothing written)")
         if err:
             return f"cannot export: {err}"
         r = E.run(root, mha_dir, res, tree, rows, files, references=refs, redact=redact,
-                  mapping_path=params.get("structure_names"))
+                  mapping_path=params.get("structure_names"),
+                  reference_modality=None if mod == "AUTO" else mod)
         return (f"done: {r['images']} images, {r['rtstructs']} RTSTRUCTs ({'; '.join(r['rt_details']) or '-'}), "
                 f"{r['skipped']} skipped, {len(r['failed'])} failed. See export_report.txt in {r['out']}.")
 

@@ -164,10 +164,13 @@ def test_anonymization(tmp):
     ct_sops = {d.SOPInstanceUID for d in cts}
     check("anonymize: contour image references point to the new CT SOP UIDs",
           all(ci.ReferencedSOPInstanceUID in ct_sops for ci in ref.ContourImageSequence))
-    d0 = dt.datetime.strptime(cts[0].StudyDate, "%Y%m%d")
-    d1 = dt.datetime.strptime(rs.StructureSetDate, "%Y%m%d")
-    check("anonymize: dates shifted, interval kept (1 day)", cts[0].StudyDate != "20240115" and (d1 - d0).days == 1,
-          f"{cts[0].StudyDate} / {rs.StructureSetDate}")
+    # dicognito shifts date AND time, so compare full timestamps: 15 Jan 10:15 -> 16 Jan 09:00 = 22 h 45 min
+    # (dates alone may differ by 0 or 1 day once the shifted time crosses midnight)
+    d0 = dt.datetime.strptime(cts[0].StudyDate + str(cts[0].StudyTime)[:6], "%Y%m%d%H%M%S")
+    d1 = dt.datetime.strptime(rs.StructureSetDate + str(rs.StructureSetTime)[:6], "%Y%m%d%H%M%S")
+    check("anonymize: dates shifted, date+time interval kept (22 h 45 min)",
+          cts[0].StudyDate != "20240115" and d1 - d0 == dt.timedelta(hours=22, minutes=45),
+          f"{d0} / {d1}")
     ids = X.identifiers(src)
     check("export check: identifiers read from original",
           "mustermann" in ids["names"] and PHI["id"].lower() in ids["ids"] and "1965-03-12" in ids["dates"])
@@ -235,11 +238,58 @@ def test_structures():
           and parse_labels("PTV=1,GTV,GTVn1=2") == [("PTV", "PTV", 1), ("GTV", "GTV,GTVn1", 2)])
 
 
+def test_empty_stays_empty():
+    """dicognito must not invent values for attributes that were empty (e.g. a fake clinic name)."""
+    from dicognito.anonymizer import Anonymizer
+    from toolsets.dicom import anonymize as A
+    ds = Dataset()
+    ds.file_meta = FileMetaDataset()
+    ds.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+    ds.file_meta.MediaStorageSOPClassUID = CTImageStorage
+    ds.file_meta.MediaStorageSOPInstanceUID = ds.SOPInstanceUID = generate_uid()
+    ds.SOPClassUID = CTImageStorage
+    ds.PatientName, ds.PatientID, ds.Modality, ds.StudyDate = "", "", "CT", "20240115"
+    ds.InstitutionName, ds.OperatorsName = "", ""          # InstitutionAddress absent on purpose
+    ds.ReferringPhysicianName = PHI["physician"]
+    item = Dataset()
+    item.InstitutionName = ""
+    ds.ReferencedStudySequence = [item]
+    A.anonymize_dataset(ds, Anonymizer(seed="test"))
+    check("anonymize: empty attributes stay empty, none invented (clinic, address, operator)",
+          not ds.InstitutionName and "InstitutionAddress" not in ds and not ds.OperatorsName
+          and not ds.ReferencedStudySequence[0].InstitutionName,
+          f"{ds.get('InstitutionName')!r} {ds.get('InstitutionAddress')!r} {ds.get('OperatorsName')!r}")
+    check("anonymize: filled attributes are still replaced, patient keeps a pseudonym",
+          str(ds.ReferringPhysicianName) != PHI["physician"] and str(ds.PatientID) != ""
+          and str(ds.PatientName).startswith("ANON^"))
+
+
+GERMAN_NAMES = {   # clinical German names seen at LMU -> expected TG-263 name
+    "Rückenmark": "SpinalCord", "Myelon+5mm": "SpinalCord_PRV05", "N. opticus li": "OpticNrv_L",
+    "Gl. parotis rechts": "Parotid_R", "Speiseröhre": "Esophagus", "OESOPHAGUS": "Esophagus",
+    "Plexus_re": "BrachialPlex_R", "Lunge li": "Lung_L", "Lungen bds": "Lungs", "Lunge-GTV": "Lungs-GTV",
+    "Lungen ohne PTV": "Lungs-PTV", "HERZ": "Heart", "GROßE_GEFÄßE": "GreatVes", "ZENTRALEATEMWEGE": "Bronchus",
+    "Hüftkopf rechts": "Femur_Head_R", "Harnblase": "Bladder", "Boundary": "External", "Außenkontur": "External",
+    "GTV_Primarius": "GTVp", "GTV_LN_2R_4R": "GTVn_2R4R", "CTV LAW": "CTVn", "PTV_50,4": "PTV_5040",
+    "PTV2_45Gy": "PTV2_4500", "H_RING": "zRING", "H_LUNGEN_BDS_GTV": "zLUNGEN_BDS_GTV", "PTV-Ring": "zPTV_Ring",
+    "Luft": "zLuft", "zPTV_opt": "zPTV_opt",
+}
+
+
+def test_german_names():
+    from toolsets.dicom import structnames as N
+    wrong = {n: N.standardize(n)["standard"] for n, want in GERMAN_NAMES.items()
+             if N.standardize(n)["standard"] != want}
+    check(f"names: {len(GERMAN_NAMES)} German clinical names -> TG-263", not wrong, str(wrong)[:300])
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="orin_tests_")
     print(f"orin-agent regression tests (synthetic data) in {tmp}")
     for name, fn in [("anonymization + export check", lambda: test_anonymization(tmp)),
-                     ("layout", lambda: test_layout(tmp)), ("structures", test_structures)]:
+                     ("layout", lambda: test_layout(tmp)), ("structures", test_structures),
+                     ("German structure names", test_german_names),
+                     ("anonymizer: empty attributes", test_empty_stays_empty)]:
         print(f"\n[{name}]")
         try:
             fn()

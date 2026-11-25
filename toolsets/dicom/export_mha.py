@@ -49,11 +49,23 @@ def available():
     return os.path.exists(PLASTIMATCH)
 
 
+def _fs_text(name):
+    """File name -> real text. plastimatch names mask files with the RTSTRUCT's raw bytes (often Latin-1),
+    which Python returns with surrogate escapes that cannot be written to JSON/CSV."""
+    b = os.fsencode(name)
+    try:
+        return b.decode("utf-8")
+    except UnicodeDecodeError:
+        return b.decode("latin-1")
+
+
 def _run(args, timeout=1800):
     env = dict(os.environ)
     env["LD_LIBRARY_PATH"] = f"{ITK_LIB}:{PLM_HOME}/lib:" + env.get("LD_LIBRARY_PATH", "")
     env["TMPDIR"] = tempfile.gettempdir()      # inside the encrypted session space (layout.use_session_tmp)
-    p = subprocess.run([PLASTIMATCH] + args, capture_output=True, text=True, timeout=timeout, env=env)
+    # plastimatch prints ROI names in the file's own encoding (often Latin-1, e.g. German "ß"): never fail on it
+    p = subprocess.run([PLASTIMATCH] + args, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       timeout=timeout, env=env)
     if p.returncode != 0:
         raise RuntimeError((p.stderr or p.stdout).strip().splitlines()[-1][:300] if (p.stderr or p.stdout) else "failed")
     return p.stdout
@@ -102,6 +114,30 @@ def _safe_json(ds, row, mha_path):
     except Exception:
         pass
     return d
+
+
+def _rt_for_uids(rt_path):
+    """FrameOfReferenceUIDs an RTSTRUCT is defined in."""
+    ds = pydicom.dcmread(rt_path, stop_before_pixels=True)
+    uids = {str(fr.FrameOfReferenceUID) for fr in ds.get("ReferencedFrameOfReferenceSequence", [])
+            if "FrameOfReferenceUID" in fr}
+    if "FrameOfReferenceUID" in ds:
+        uids.add(str(ds.FrameOfReferenceUID))
+    return uids
+
+
+def _images_like(rt_row, modality, own, rows, by_id):
+    """Image series of `modality` that belong to the same plan as an RTSTRUCT: same folder first, then same
+    study; within that, the same matrix and slice count as the series the RTSTRUCT names, then most files."""
+    imgs = [r for r in rows if r["modality"] == modality and r["category"] in ("image", "derived_image")
+            and r["patient"] == rt_row["patient"]]
+    same_dir = [r for r in imgs if r.get("example_folder") and r["example_folder"] == rt_row.get("example_folder")]
+    same_study = [r for r in imgs if r["study"] == rt_row["study"]]
+    pool = same_dir or (same_study if len(same_study) == 1 else [])     # never guess between several
+    o = by_id.get(own) or {}
+    pool.sort(key=lambda r: (r.get("matrix") != o.get("matrix"), r["n_files"] != o.get("n_files"),
+                             -r["n_files"], r["id"]))
+    return [r["id"] for r in pool]
 
 
 def _ref_lookup(rt_path, rt_row, inst_by_series, rows):
@@ -159,8 +195,10 @@ def describe(rows, out):
 
 
 def run(root, out, res, tree, rows, files, references=None, redact=lambda t: t, only=None,
-        standard_names=True, mapping_path=None):
+        standard_names=True, mapping_path=None, reference_modality=None):
     """references: {rtstruct_series_id or '*': series id | DICOM folder | image file}
+    reference_modality: None/'auto' = the series each RTSTRUCT names; 'CT' or 'MR' = that modality from the
+    same plan folder (e.g. the planning CT instead of the daily MR)
     standard_names: name mask files by TG-263 (structnames.py; user mapping file wins)"""
     mapping, map_problems = N.load_mapping(mapping_path) if standard_names else ({}, [])
     unmapped_all = []
@@ -216,13 +254,48 @@ def run(root, out, res, tree, rows, files, references=None, redact=lambda t: t, 
             if kind != "rtstruct":
                 continue
             rt_file = os.path.join(root, files[r["id"]][0])
-            ref = references.get(r["id"]) or references.get("*")
-            how = "given by user"
+            # Order: a reference given for this RTSTRUCT > the requested modality (CT/MR) > the series the
+            # RTSTRUCT names itself > a reference given for all ("*", only a fallback) > same frame of reference.
+            own, own_how = _ref_lookup(rt_file, r, inst_by_series, rows)
+            names_own = bool(own) and own_how.startswith("referenced series")
+            ref, how = references.get(r["id"]), "given by user"
+            if not ref and reference_modality in ("CT", "MR"):
+                if names_own and by_id[own]["modality"] == reference_modality:
+                    ref, how = own, own_how + f" (is {reference_modality})"
+                else:
+                    cand = _images_like(r, reference_modality, own, rows, by_id)
+                    if not cand:
+                        skipped.append((r, f"no {reference_modality} image in the same folder/study as the "
+                                           f"RTSTRUCT - choose a reference series"))
+                        continue
+                    ref = cand[0]
+                    how = (f"{reference_modality} requested: {ref} from the same folder as the RTSTRUCT "
+                           f"(it names {own or 'no series'})" + (f"; {len(cand)} candidates, first taken: "
+                                                                  f"{', '.join(cand)}" if len(cand) > 1 else ""))
             if not ref:
-                ref, how = _ref_lookup(rt_file, r, inst_by_series, rows)
-                if not ref:
-                    skipped.append((r, how))
+                given = references.get("*")
+                if names_own:
+                    ref, how = own, own_how
+                    if given and given != own:
+                        how += f"; given reference {given} not used - the RTSTRUCT names its own image series"
+                elif given:
+                    ref, how = given, "given by user (the RTSTRUCT's own image series is not in the folder)"
+                elif own:
+                    ref, how = own, own_how
+                else:
+                    skipped.append((r, own_how))
                     continue
+            # A series other than the one the RTSTRUCT names must share its frame of reference, or masks land in
+            # the wrong place. Checked only where the UIDs are usable: some anonymizers give every slice its own.
+            if ref in by_id and ref != own:
+                rt_for = _rt_for_uids(rt_file)
+                ref_for = {inst_by_path[p].get("for_uid") for p in files[ref]} - {None, ""}
+                if rt_for and len(ref_for) == 1 and not ref_for & rt_for:
+                    skipped.append((r, f"reference {ref} has a different FrameOfReferenceUID than the RTSTRUCT - "
+                                       f"masks would be misplaced"))
+                    continue
+                if len(ref_for) > 1:
+                    how += "; frame of reference not checkable (UIDs differ per slice)"
             # resolve reference to plastimatch arguments
             if ref in by_id:
                 ref_desc = f"series {ref}"
@@ -248,7 +321,7 @@ def run(root, out, res, tree, rows, files, references=None, redact=lambda t: t, 
                 except Exception:
                     real = {}
                 masks = sorted(glob.glob(os.path.join(raw, "*.mha")))
-                stems = [os.path.splitext(os.path.basename(f))[0] for f in masks]
+                stems = [_fs_text(os.path.splitext(os.path.basename(f))[0]) for f in masks]
                 rois = [real.get(N.key(st), st) for st in stems]
                 names = N.standardize_all(rois, mapping) if standard_names else                     [{"original": x, "standard": x, "status": "off", "note": ""} for x in rois]
                 for i, (f, roi, nm) in enumerate(zip(masks, rois, names), 1):

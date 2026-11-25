@@ -93,12 +93,15 @@ def header():
     v = vault_unlocked()
     vfree = f" · {shutil.disk_usage(VAULT).free // 2**30} GB free" if v else ""
     t = Table.grid(padding=(0, 3))
+    state = "[bold green]OFFLINE ✓[/]" if off else \
+        "[bold magenta]ONLINE · TEST MODE[/]" if TEST["on"] else "[bold red]ONLINE ⚠[/]"
     t.add_row(
-        "[bold green]OFFLINE ✓[/]" if off else "[bold red]ONLINE ⚠[/]",
+        state,
         f"[green]Session space active{vfree}[/]" if v else "[yellow]No session space[/]",
         "[green]Model running[/]" if model_running() else "[dim]Model stopped[/]",
         f"[dim]RAM free {mem_free_mb()} MB[/]")
-    c.print(Panel(t, title="[bold]Orin offline console[/]", border_style="green" if off else "red"))
+    c.print(Panel(t, title="[bold]Orin offline console[/]",
+                  border_style="green" if off else "magenta" if TEST["on"] else "red"))
 
 
 def pick(title, items, show=lambda x: str(x)):
@@ -225,13 +228,45 @@ def act_vault():
         session_start()
 
 
+# Test mode: work while online, for anonymized or synthetic data only. Off at every start unless
+# `orin-console --test` or ORIN_ALLOW_ONLINE=1; switched in the menu (8) after typing TEST; every switch is logged.
+TEST = {"on": "--test" in sys.argv or os.environ.get("ORIN_ALLOW_ONLINE") == "1"}
+
+
+def log_event(msg):
+    """One line to the system journal (journalctl -t orin-console); no patient data in it."""
+    subprocess.run(["logger", "-t", "orin-console", msg], check=False)
+
+
 def require_offline(what):
-    """Patient data is only handled offline (verified). ORIN_ALLOW_ONLINE=1 is for tests with non-patient data."""
+    """Patient data is only handled offline (verified) - except in test mode (anonymized/synthetic data)."""
     off, _ = offline_state()
-    if off or os.environ.get("ORIN_ALLOW_ONLINE") == "1":
+    if off:
         return True
-    c.print(f"[red]Not offline - {what} is only possible offline. Go offline first (menu 1).[/]")
+    if TEST["on"]:
+        c.print(f"[magenta]Test mode: {what} while online (anonymized or synthetic data only).[/]")
+        return True
+    c.print(f"[red]Not offline - {what} is only possible offline. Go offline first (menu 1), "
+            f"or switch on test mode (menu 8) for anonymized/synthetic data.[/]")
     return False
+
+
+def act_test_mode():
+    if TEST["on"]:
+        TEST["on"] = False
+        log_event("test mode OFF")
+        c.print("[green]Test mode off - patient data work needs the Orin offline again.[/]")
+        return
+    c.print(Panel("Test mode lets you import, analyse and export [bold]while the Orin is online[/].\n"
+                  "Use it only for [bold]anonymized or synthetic[/] data - never for identifiable patient data.\n"
+                  "It stays on until you switch it off (8) or quit; the switch is logged.",
+                  title="Test mode", border_style="magenta"))
+    if Prompt.ask("Type TEST to confirm the data is anonymized or synthetic", default="") == "TEST":
+        TEST["on"] = True
+        log_event("test mode ON (anonymized/synthetic data only)")
+        c.print("[magenta]Test mode on.[/]")
+    else:
+        c.print("[dim]not switched on[/]")
 
 
 def next_case_name():
@@ -425,6 +460,12 @@ def act_tool():
     ], lambda x: x[0])
     if t and t[1] is None:
         act_structures(ds)
+    elif t and t[1][0] == "dicom_to_mha.py":
+        m = pick("Put the structure masks on", [
+            ("auto", "the image each structure set refers to (recommended)"),
+            ("CT", "the CT of the same plan"), ("MR", "the MR of the same plan")], lambda x: f"{x[0]:5} {x[1]}")
+        if m:
+            subprocess.run([PY, os.path.join(HERE, "dicom_to_mha.py"), ds, "--ref-modality", m[0]], cwd=HERE)
     elif t:
         subprocess.run([PY, os.path.join(HERE, t[1][0])] + t[1][1:], cwd=HERE)
 
@@ -567,15 +608,21 @@ def main():
                 ("5", "Run a tool directly (report / organize / anonymize / MHA / structures)"),
                 ("6", "Export a result to USB drive"),
                 ("7", "Status and offline log"),
+                ("8", "Test mode: ON - switch off" if TEST["on"] else
+                      "Test mode: work online with anonymized/synthetic data"),
                 ("q", "Quit = destroy the session space")]
         for k, label in menu:
             c.print(f"  [cyan]{k}[/]  {label}")
-        if not off:
-            c.print("  [red]⚠ Online - go offline (1) before working with patient data.[/]")
+        if not off and TEST["on"]:
+            c.print("  [magenta]Test mode - online allowed. Anonymized or synthetic data only.[/]")
+        elif not off:
+            c.print("  [red]⚠ Online - go offline (1) before working with patient data, "
+                    "or use test mode (8) for anonymized data.[/]")
         a = Prompt.ask("choice", default="")
         try:
             {"1": lambda: act_offline(not off), "2": act_vault, "3": act_import, "4": act_agent,
-             "5": act_tool, "6": act_export, "7": act_status, "q": act_quit}.get(a, lambda: None)()
+             "5": act_tool, "6": act_export, "7": act_status, "8": act_test_mode,
+             "q": act_quit}.get(a, lambda: None)()
         except KeyboardInterrupt:
             c.print("\n[dim]cancelled[/]")
 
