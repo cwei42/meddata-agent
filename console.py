@@ -337,7 +337,14 @@ def act_export():
         ids = X.identifiers(os.path.join(case, L.ORIGINAL))
         res = X.scan(src, ids)
     c.print(Panel(X.summary(res), title=f"identifier check: {step}",
-                  border_style="red" if res["hits"] else "green"))
+                  border_style="red" if res["hits"] else "yellow" if res.get("note") else "green"))
+    if res.get("note") and not res["hits"]:
+        # nothing to compare against (e.g. data that arrived already anonymized): the check proves nothing
+        c.print("[yellow]The identifier check could NOT run: the original data has no names, IDs or birth dates "
+                "to search for (probably anonymized before import). Make sure the files are anonymized.[/]")
+        if not Confirm.ask("Export anyway?", default=False):
+            c.print("not exported")
+            return
     identifiable = step in IDENTIFIABLE_STEPS or os.path.isdir(src) and any(
         d.startswith("RTSTRUCT") for _, ds, _ in os.walk(src) for d in ds)
     if res["hits"] and not identifiable:

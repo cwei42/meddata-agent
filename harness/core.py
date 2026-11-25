@@ -8,6 +8,8 @@ import time
 from .policy import Policy
 from .tools import ToolResult
 
+TOOLS_NOTE = re.compile(r"\n?\[tools used for this answer:[^\]\n]*\]")
+
 
 def load_toolsets(names_with_params):
     """[{"name": "dicom", "params": {...}}, ...] -> list of Toolset."""
@@ -58,7 +60,7 @@ class Agent:
 
     def _remember(self, question, answer, used):
         # the next question sees which tools ran (e.g. "save that script" after run_python)
-        note = f"\n[tools used for this answer: {', '.join(used)}]" if used else ""
+        note = f"\n[tools used for this answer: {', '.join(used)}]" if used else ""   # see TOOLS_NOTE in ask()
         self.history += [{"role": "user", "content": question}, {"role": "assistant", "content": answer + note}]
         self.history = self.history[:1] + self.history[1:][-8:]
 
@@ -141,7 +143,10 @@ class Agent:
                 self._add_images(msgs, images)
                 continue
             if not calls or calls_made >= self.policy.max_tool_calls:
-                answer = re.sub(r"<think>.*?</think>", "", content, flags=re.S).strip()
+                answer = re.sub(r"<think>.*?</think>", "", content, flags=re.S)
+                # the history note "[tools used ...]" is the harness's, not the model's: a model that copies it
+                # invents tools it did not run - drop any such line from the answer
+                answer = TOOLS_NOTE.sub("", answer).strip()
                 answer = self.redact(answer) or "(no answer)"
                 self._remember(question, answer, used)
                 self._trace(event="answer", text=answer)

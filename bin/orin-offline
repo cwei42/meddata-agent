@@ -7,7 +7,13 @@
 #   test N  go offline, automatically back online after N seconds (for remote testing)
 LOG=/var/log/orin-offline.log
 WHO=${SUDO_USER:-$(id -un)}
-log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
+# The Orin has no battery-backed clock: right after a boot, before the network time is synced, the date can be
+# 1970. Mark such entries so the log is not misread.
+log() {
+  local note=""
+  [ "$(date +%Y)" -lt 2024 ] && note=" [clock not set - time wrong; uptime $(cut -d' ' -f1 /proc/uptime)s]"
+  echo "$(date '+%F %T') $*$note" >> "$LOG"
+}
 
 check() {   # prints problems; returns 0 if fully offline
   local bad=0

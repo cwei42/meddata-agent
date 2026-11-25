@@ -276,6 +276,13 @@ GERMAN_NAMES = {   # clinical German names seen at LMU -> expected TG-263 name
 }
 
 
+def test_harness_text():
+    from harness.core import TOOLS_NOTE
+    a = "Report text.\n[tools used for this answer: list_series, resample_images, export_mha]"
+    check("harness: a copied '[tools used ...]' line is removed from answers",
+          TOOLS_NOTE.sub("", a).strip() == "Report text.")
+
+
 def test_german_names():
     from toolsets.dicom import structnames as N
     wrong = {n: N.standardize(n)["standard"] for n, want in GERMAN_NAMES.items()
@@ -289,7 +296,8 @@ def main():
     for name, fn in [("anonymization + export check", lambda: test_anonymization(tmp)),
                      ("layout", lambda: test_layout(tmp)), ("structures", test_structures),
                      ("German structure names", test_german_names),
-                     ("anonymizer: empty attributes", test_empty_stays_empty)]:
+                     ("anonymizer: empty attributes", test_empty_stays_empty),
+                     ("harness", test_harness_text)]:
         print(f"\n[{name}]")
         try:
             fn()

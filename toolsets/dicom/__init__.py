@@ -9,6 +9,7 @@ import io
 import json
 import os
 import re
+import shutil
 import sys
 
 import numpy as np
@@ -55,9 +56,36 @@ def setup(params):
         paths = files[sid]
         return pydicom.dcmread(os.path.join(root, paths[len(paths) // 2]), stop_before_pixels=not pixels), len(paths)
 
+    def folder_of(sid):
+        """Top folder of a series inside the case (e.g. the plan / fraction folder); names masked by redact."""
+        p = files[sid][0].replace("\\", "/")
+        return redact(p.split("/")[0]) if "/" in p else "."
+
+    inst_by_path = {i["path"]: i for i in res["instances"]}
+    uid_to_id = {inst_by_path[p[0]]["series_uid"]: sid for sid, p in files.items()
+                 if p[0] in inst_by_path and inst_by_path[p[0]].get("series_uid")}
+    refs_cache = {}
+
+    def rt_refs(sid):
+        """Series ids an RTSTRUCT / RTDOSE / RTPLAN points to (referenced image series, plan, structure set)."""
+        if sid not in refs_cache:
+            out = []
+            try:
+                ds = pydicom.dcmread(os.path.join(root, files[sid][0]), stop_before_pixels=True)
+                for fr in ds.get("ReferencedFrameOfReferenceSequence", []):
+                    for st in fr.get("RTReferencedStudySequence", []):
+                        for se in st.get("RTReferencedSeriesSequence", []):
+                            out.append(uid_to_id.get(str(se.SeriesInstanceUID), "missing"))
+            except Exception:
+                pass
+            refs_cache[sid] = out
+        return refs_cache[sid]
+
     @tool("list_series",
-          "List series (one line each: id, modality, category, description, file count, slice thickness). "
-          "Optional filters narrow the list.",
+          "List series (one line each: id, modality, category, description, file count, slice thickness, "
+          "folder = the top folder it came from, e.g. one plan or fraction; RTSTRUCT: refs = the image series "
+          "its contours are drawn on). Series ids are numbered in scan order, NOT by fraction - group series of "
+          "one plan/fraction by folder. Optional filters narrow the list.",
           {"type": "object", "properties": {
               "modality": {"type": "string", "description": "DICOM code: CT, MR, PT (=PET), NM, US, CR/DX (X-ray), MG, "
                                                             "XA, RTPLAN, RTSTRUCT, RTDOSE, SR, SEG, OT. Several allowed, "
@@ -65,8 +93,9 @@ def setup(params):
               "category": {"type": "string", "description": "image, localizer, derived_image, dose_report, "
                                                             "secondary_capture, structured_report, rt, other"},
               "text": {"type": "string", "description": "case-insensitive substring of description/protocol"},
+              "folder": {"type": "string", "description": "case-insensitive substring of the folder, e.g. Fx12"},
               "patient": {"type": "string", "description": "patient pseudonym, e.g. P003"}}})
-    def list_series(modality=None, category=None, text=None, patient=None):
+    def list_series(modality=None, category=None, text=None, patient=None, folder=None):
         mods = None
         if modality:
             mods = set()
@@ -83,16 +112,26 @@ def setup(params):
                 continue
             if text and text.lower() not in (r["series_description"] + " " + r["protocol_name"]).lower():
                 continue
+            fol = folder_of(r["id"])
+            if folder and folder.lower() not in fol.lower():
+                continue
             prot = r["protocol_name"] if r["protocol_name"] and r["protocol_name"] != r["series_description"] else ""
+            refs = rt_refs(r["id"]) if r["modality"] == "RTSTRUCT" else []
             out.append(f"{r['id']} | {r['modality']} | {r['category']} | {r['series_description'] or '-'}"
                        f"{' / ' + prot if prot else ''} | n={r['n_files']}"
                        f"{'x' + r['frames'] + 'fr' if r['frames'] else ''}"
                        f"{' | thick=' + r['slice_thickness'] if r['slice_thickness'] else ''}"
+                       f" | folder={fol}{' | refs=' + ','.join(refs) if refs else ''}"
                        f"{' | PHI-flag' if r['phi_in_text'] else ''}")
         if not out:
             return "no matching series"
         more = f"\n... {len(out) - 80} more (use filters)" if len(out) > 80 else ""
-        return f"{len(out)} series:\n" + "\n".join(out[:80]) + more
+        counts = {}
+        for line in out:
+            m = line.split(" | ")[1]
+            counts[m] = counts.get(m, 0) + 1
+        head = f"{len(out)} series (" + ", ".join(f"{v} {k}" for k, v in sorted(counts.items())) + "):\n"
+        return head + "\n".join(out[:80]) + more
 
     @tool("get_series_details",
           "Technical header fields of one series (TR/TE, slice thickness, orientation, kVp, kernel, contrast ...). "
@@ -104,7 +143,13 @@ def setup(params):
         r = by_id[series_id]
         ds, n = read_mid(series_id)
         d = {"id": series_id, "category": r["category"], "sop_class": r["sop_name"],
-             "description": r["series_description"], "protocol": r["protocol_name"], "files": n}
+             "description": r["series_description"], "protocol": r["protocol_name"], "files": n,
+             "folder": folder_of(series_id)}
+        if r["modality"] == "RTSTRUCT":
+            d["contours_drawn_on"] = rt_refs(series_id) or "not stated in the file"
+        same = [x["id"] for x in rows if x["id"] != series_id and folder_of(x["id"]) == d["folder"]]
+        if same and d["folder"] != ".":
+            d["other_series_in_same_folder"] = same[:20]
         for t in SAFE_TAGS:
             v = S.s(ds, t)
             if v:
@@ -174,21 +219,38 @@ def setup(params):
     out_dir = os.path.abspath(os.path.expanduser(params.get("output") or L.out(root, "organized")))
     from . import organize as O
     state = {"plan": None}
+    OVERWRITE = {"type": "boolean", "description": "true = replace an earlier result in that folder (only when the "
+                                                   "user asked for a new run; the user approves)"}
+
+    def prepare_out(out, overwrite):
+        """'' if the folder can be written. An earlier result is replaced only with overwrite=true
+        (inside the case folder only, never the originals)."""
+        err = O.check_output(root, out)
+        if err.startswith("output folder is not empty") and overwrite:
+            case = L.case_dir(root)
+            if case and os.path.commonpath([case, out]) == case and os.path.abspath(out) != os.path.abspath(case):
+                shutil.rmtree(out)
+                return ""
+        if err.startswith("output folder is not empty"):
+            return err + " (an earlier result) - call again with overwrite=true to replace it"
+        return err
 
     @tool("organize_dicom",
           f"Copy all DICOM files into a clean Patient/Study/Series folder structure at {out_dir}. "
           "Originals are not changed. Call with dry_run=true first to see the plan; "
           "dry_run=false performs the copy (the user will be asked to approve).",
           {"type": "object", "properties": {
-              "dry_run": {"type": "boolean", "description": "true = only show the plan (default)"}}},
+              "dry_run": {"type": "boolean", "description": "true = only show the plan (default)"},
+              "overwrite": OVERWRITE}},
           read_only=False, safe_when=lambda a: a.get("dry_run", True) is not False)
-    def organize_dicom(dry_run=True):
+    def organize_dicom(dry_run=True, overwrite=False):
         if state["plan"] is None:
             state["plan"] = O.make_plan(root, res, tree, rows, files)
-        err = O.check_output(root, out_dir)
         text = O.describe_plan(state["plan"], out_dir)
         if dry_run is not False:
+            err = O.check_output(root, out_dir)
             return text + (f"\n\nWARNING: {err}" if err else "\n\n(dry run - nothing copied)")
+        err = prepare_out(out_dir, overwrite)
         if err:
             return f"cannot organize: {err}"
         r = O.execute(state["plan"], out_dir, mask=redact)
@@ -203,15 +265,17 @@ def setup(params):
           f"Write an anonymized DICOM copy (Patient/Study/Series folders) to {anon_dir}. Uses dicognito plus "
           "extra rules; every output file is re-checked. Pixel data unchanged. dry_run=true shows the plan; "
           "dry_run=false writes (the user will be asked to approve).",
-          {"type": "object", "properties": {"dry_run": {"type": "boolean", "description": "true = only show plan"}}},
+          {"type": "object", "properties": {"dry_run": {"type": "boolean", "description": "true = only show plan"},
+                                            "overwrite": OVERWRITE}},
           read_only=False, safe_when=lambda a: a.get("dry_run", True) is not False)
-    def anonymize_dicom(dry_run=True):
-        err = O.check_output(root, anon_dir)
+    def anonymize_dicom(dry_run=True, overwrite=False):
         plan = O.make_plan(root, res, tree, rows, files, include_year=False)
         if dry_run is not False:
+            err = O.check_output(root, anon_dir)
             return (O.describe_plan(plan, anon_dir) + "\n\nnames/IDs replaced, dates shifted, UIDs remapped, "
                     "free text masked, private tags removed. Pixel data unchanged."
                     + (f"\nWARNING: {err}" if err else "\n(dry run - nothing written)"))
+        err = prepare_out(anon_dir, overwrite)
         if err:
             return f"cannot anonymize: {err}"
         r = A.run(root, anon_dir, res, tree, rows, files)
@@ -236,16 +300,17 @@ def setup(params):
                                      "description": "auto (default) = the series each RTSTRUCT names; CT or MR = "
                                                     "that modality from the same plan folder"},
               "reference_series_id": {"type": "string", "description": "optional fallback image series id, used "
-                                      "only for RTSTRUCTs whose own referenced series is missing"}}},
+                                      "only for RTSTRUCTs whose own referenced series is missing"},
+              "overwrite": OVERWRITE}},
           read_only=False, safe_when=lambda a: a.get("dry_run", True) is not False)
-    def export_mha(dry_run=True, reference_series_id=None, reference_modality="auto"):
+    def export_mha(dry_run=True, reference_series_id=None, reference_modality="auto", overwrite=False):
         if reference_series_id and reference_series_id not in by_id:
             return f"unknown series id {reference_series_id}"
         mod = (reference_modality or "auto").upper().replace("MRI", "MR")
         if mod not in ("AUTO", "CT", "MR"):
             return "reference_modality must be auto, CT or MR"
         refs = {"*": reference_series_id} if reference_series_id else {}
-        err = O.check_output(root, mha_dir)
+        err = O.check_output(root, mha_dir) if dry_run is not False else prepare_out(mha_dir, overwrite)
         if dry_run is not False:
             return E.describe(rows, mha_dir) + \
                 f"\nreference for RTSTRUCT: {'each its own series' if mod == 'AUTO' else mod + ' of the same plan'}" + \
