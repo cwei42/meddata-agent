@@ -74,6 +74,13 @@ class Export:
         out = []
         for q in [x.strip() for x in str(query).split(",") if x.strip()]:
             glob_q = any(c in q for c in "*?[")
+            # plain words or synonyms ("brachial plexus", "Rueckenmark", "Lunge") -> the TG-263 base name;
+            # a paired organ named without side matches both sides
+            base = None
+            if not glob_q:
+                std = N.standardize(q)
+                base = std["standard"] if std["status"] in ("synonym", "standard") else \
+                    (N.SYNONYMS.get(N.key(q)) or (None,))[0]
             for s in self.structures:
                 if patient and s["patient"] != patient or rtstruct and s["rtstruct"] != rtstruct:
                     continue
@@ -88,6 +95,9 @@ class Export:
                           fnmatch.fnmatch(s["name"].lower(), q.lower())
                 else:
                     hit = N.key(q) in (N.key(s["standard"]), N.key(s["name"]))
+                    if not hit and s["naming"] != "derived" and base:
+                        hit = s["standard"] == base or (s["standard"].startswith(base + "_")
+                                                        and s["standard"][len(base) + 1:] in ("L", "R"))
                 if hit and s not in out:
                     out.append(s)
         return out

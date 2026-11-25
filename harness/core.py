@@ -9,6 +9,9 @@ from .policy import Policy
 from .tools import ToolResult
 
 TOOLS_NOTE = re.compile(r"\n?\[tools used for this answer:[^\]\n]*\]")
+# a measured value: number + unit (volume, dose, length, percent, HU)
+MEASURE = re.compile(r"\d+(?:[.,]\d+)?\s*(?:ml|mL|cc|cm³|c?Gy|mm|HU|%)(?![A-Za-z])")
+SERIES_ID = re.compile(r"\bP\d{3}-S\d{2}-\d{2,3}\b")      # series ids made up by the model, not seen anywhere
 
 
 def load_toolsets(names_with_params):
@@ -98,6 +101,7 @@ class Agent:
         calls_made = 0
         seen, used = set(), []          # repeated identical calls are not run again; tools used -> history
         retries = 0
+        nudged = False                  # one push when numbers appear without any tool call in this turn
         self._trace(event="question", text=question)
         for step in range(self.policy.max_steps):
             self.on_event({"type": "thinking"})
@@ -141,6 +145,19 @@ class Agent:
                 msgs.append({"role": "user", "content": f"Observation ({name}):\n{text}\n\n"
                                                         "Continue: fix and run again if needed, otherwise answer."})
                 self._add_images(msgs, images)
+                continue
+            context = " ".join(str(x.get("content") or "") for x in msgs)
+            new_ids = set(SERIES_ID.findall(content)) - set(SERIES_ID.findall(context))
+            if not calls and not used and not last and not nudged and self.tools and \
+                    (MEASURE.search(content) or new_ids):
+                # numbers with units but no tool ran in this turn: small models invent values from the history
+                # ("Fx6 GTVp 124 ml") - one push to look the value up, or to say it is not known
+                nudged = True
+                msgs.append({"role": "assistant", "content": content})
+                msgs.append({"role": "user", "content": "Your answer gives measured values or series ids that you "
+                                                        "did not look up in this turn. Get them with a tool now "
+                                                        "(they must come from tool output), or say that you do "
+                                                        "not know."})
                 continue
             if not calls or calls_made >= self.policy.max_tool_calls:
                 answer = re.sub(r"<think>.*?</think>", "", content, flags=re.S)

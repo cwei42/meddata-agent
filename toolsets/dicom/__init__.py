@@ -64,10 +64,13 @@ def setup(params):
     inst_by_path = {i["path"]: i for i in res["instances"]}
     uid_to_id = {inst_by_path[p[0]]["series_uid"]: sid for sid, p in files.items()
                  if p[0] in inst_by_path and inst_by_path[p[0]].get("series_uid")}
+    sop_to_id = {i["sop_uid"]: sid for sid, ps in files.items() for p in ps
+                 for i in [inst_by_path.get(p)] if i and i.get("sop_uid")}
     refs_cache = {}
 
     def rt_refs(sid):
-        """Series ids an RTSTRUCT / RTDOSE / RTPLAN points to (referenced image series, plan, structure set)."""
+        """What an RT object points to: RTSTRUCT -> image series; RTPLAN -> structure set (+ its image);
+        RTDOSE -> plan and structure set. Series ids, 'missing' if not in this folder."""
         if sid not in refs_cache:
             out = []
             try:
@@ -76,16 +79,37 @@ def setup(params):
                     for st in fr.get("RTReferencedStudySequence", []):
                         for se in st.get("RTReferencedSeriesSequence", []):
                             out.append(uid_to_id.get(str(se.SeriesInstanceUID), "missing"))
+                for kw, label, mod in (("ReferencedRTPlanSequence", "plan", "RTPLAN"),
+                                       ("ReferencedStructureSetSequence", "structures", "RTSTRUCT")):
+                    for it in ds.get(kw, []):
+                        rid = sop_to_id.get(str(it.get("ReferencedSOPInstanceUID", "")))
+                        if rid:
+                            out.append(f"{label} {rid}")
+                        else:
+                            # the UID points nowhere (some anonymizers break references): same folder instead
+                            same = [x["id"] for x in rows if x["modality"] == mod and x["id"] != sid
+                                    and folder_of(x["id"]) == folder_of(sid) and folder_of(sid) != "."]
+                            rid = same[0] if len(same) == 1 else None
+                            out.append(f"{label} {rid} (by folder - UID reference broken)" if rid
+                                       else f"{label} not in this data")
+                        if label == "plan" and rid:                        # dose -> plan -> structure set
+                            out += [x for x in rt_refs(rid) if x.startswith("structures")]
+                if ds.get("Modality") == "RTDOSE" and not any(x.startswith("structures") for x in out):
+                    same = [x["id"] for x in rows if x["modality"] == "RTSTRUCT"
+                            and folder_of(x["id"]) == folder_of(sid) and folder_of(sid) != "."]
+                    if len(same) == 1:
+                        out.append(f"structures {same[0]} (by folder)")
             except Exception:
                 pass
-            refs_cache[sid] = out
+            refs_cache[sid] = list(dict.fromkeys(out))
         return refs_cache[sid]
 
     @tool("list_series",
           "List series (one line each: id, modality, category, description, file count, slice thickness, "
-          "folder = the top folder it came from, e.g. one plan or fraction; RTSTRUCT: refs = the image series "
-          "its contours are drawn on). Series ids are numbered in scan order, NOT by fraction - group series of "
-          "one plan/fraction by folder. Optional filters narrow the list.",
+          "folder = the top folder it came from, e.g. one plan or fraction; refs = what an RT object points to: "
+          "RTSTRUCT -> the image series its contours are drawn on, RTPLAN/RTDOSE -> 'plan <id>' and "
+          "'structures <id>'). Series ids are numbered in scan order, NOT by fraction - group series of one "
+          "plan/fraction by folder. Optional filters narrow the list.",
           {"type": "object", "properties": {
               "modality": {"type": "string", "description": "DICOM code: CT, MR, PT (=PET), NM, US, CR/DX (X-ray), MG, "
                                                             "XA, RTPLAN, RTSTRUCT, RTDOSE, SR, SEG, OT. Several allowed, "
@@ -116,7 +140,7 @@ def setup(params):
             if folder and folder.lower() not in fol.lower():
                 continue
             prot = r["protocol_name"] if r["protocol_name"] and r["protocol_name"] != r["series_description"] else ""
-            refs = rt_refs(r["id"]) if r["modality"] == "RTSTRUCT" else []
+            refs = rt_refs(r["id"]) if r["modality"] in ("RTSTRUCT", "RTPLAN", "RTDOSE") else []
             out.append(f"{r['id']} | {r['modality']} | {r['category']} | {r['series_description'] or '-'}"
                        f"{' / ' + prot if prot else ''} | n={r['n_files']}"
                        f"{'x' + r['frames'] + 'fr' if r['frames'] else ''}"
@@ -130,8 +154,20 @@ def setup(params):
         for line in out:
             m = line.split(" | ")[1]
             counts[m] = counts.get(m, 0) + 1
-        head = f"{len(out)} series (" + ", ".join(f"{v} {k}" for k, v in sorted(counts.items())) + "):\n"
-        return head + "\n".join(out[:80]) + more
+        head = f"{len(out)} series (" + ", ".join(f"{v} {k}" for k, v in sorted(counts.items())) + ")"
+        fols = {}
+        for line in out:
+            f = line.split(" | folder=")[1].split(" | ")[0] if " | folder=" in line else "."
+            fols[f] = fols.get(f, 0) + 1
+        if len(fols) > 1:
+            def nat(f):
+                m = re.search(r"(?i)fx[_ -]?(\d+)", f)
+                return (1, int(m.group(1))) if m else (0, 0)
+            fx = [f for f in fols if nat(f)[0]]
+            head += (f"\n{len(fols)} folders" + (f" ({len(fx)} with a fraction number Fx.., "
+                                                f"{len(fols) - len(fx)} without)" if fx else "") + ": " +
+                     ", ".join(f"{f} [{fols[f]}]" for f in sorted(fols, key=lambda f: (nat(f), f))))
+        return head + ":\n" + "\n".join(out[:80]) + more
 
     @tool("get_series_details",
           "Technical header fields of one series (TR/TE, slice thickness, orientation, kVp, kernel, contrast ...). "
@@ -147,6 +183,8 @@ def setup(params):
              "folder": folder_of(series_id)}
         if r["modality"] == "RTSTRUCT":
             d["contours_drawn_on"] = rt_refs(series_id) or "not stated in the file"
+        elif r["modality"] in ("RTPLAN", "RTDOSE"):
+            d["references"] = rt_refs(series_id) or "not stated in the file"
         same = [x["id"] for x in rows if x["id"] != series_id and folder_of(x["id"]) == d["folder"]]
         if same and d["folder"] != ".":
             d["other_series_in_same_folder"] = same[:20]
@@ -329,20 +367,59 @@ def setup(params):
     from . import mha_tools as MT
     from . import structure_ops as OPS
 
+    def plan_label(sid):
+        """Short name of the plan/fraction a series belongs to: 'Fx12' from '..._Fx12_Adapt', else the folder."""
+        if sid not in by_id:
+            return ""
+        f = folder_of(sid)
+        m = re.search(r"(?i)(?<![a-z0-9])(fx|fraktion|fraction)[_ -]?(\d+)", f)
+        return f"Fx{m.group(2)}" if m else ("plan " + f if f != "." else "")
+
+    def is_baseline(sid):
+        return sid in by_id and not re.search(r"(?i)(?<![a-z0-9])(fx|fraktion|fraction)[_ -]?\d+", folder_of(sid))
+
     def export():
         try:
-            return MT.Export(mha_dir, derived=derived_dir), None
+            ex = MT.Export(mha_dir, derived=derived_dir)
         except FileNotFoundError:
             return None, "no MHA export yet - call export_mha with dry_run=false first"
+        for s in ex.structures:
+            s["plan"] = plan_label(s["rtstruct"])
+        return ex, None
+
+    def pick_sets(ex, structure_set):
+        """Keep only the structures of one plan/fraction: an RTSTRUCT id, a folder part like 'Fx30', or
+        'baseline' (the folder without a fraction number). Returns (export, error)."""
+        if not structure_set:
+            return ex, None
+        q = str(structure_set).strip()
+        sets = sorted({s["rtstruct"] for s in ex.structures if s["rtstruct"] in by_id})
+        if q in sets:
+            keep = {q}
+        elif q.lower() in ("baseline", "plan", "initial", "original plan", "basisplan", "base"):
+            keep = {rt for rt in sets if is_baseline(rt)}
+        else:
+            pat = re.compile(rf"(?i)(?<![a-z0-9]){re.escape(q)}(?![0-9])")
+            keep = {rt for rt in sets if pat.search(folder_of(rt)) or pat.search(plan_label(rt))}
+        if not keep:
+            return None, (f"no structure set matches '{q}'. Structure sets: " +
+                          ", ".join(f"{rt} ({plan_label(rt)})" for rt in sets))
+        import copy
+        ex2 = copy.copy(ex)
+        ex2.structures = [s for s in ex.structures if s["rtstruct"] in keep]
+        return ex2, None
 
     def num(s):
         v = [float(x) for x in str(s).split(",") if x.strip()]
         return v[0] if len(v) == 1 else v
 
     def guarded(fn):
-        """Common wrapper: export must exist, errors become text for the model."""
-        def run(*a, **k):
+        """Common wrapper: export must exist, structure_set narrows to one plan, errors become text."""
+        def run(*a, structure_set=None, **k):
             ex, err = export()
+            if err:
+                return err
+            ex, err = pick_sets(ex, structure_set)
             if err:
                 return err
             try:
@@ -358,29 +435,55 @@ def setup(params):
     SEL = {"type": "string", "description": "structure name (TG-263 or original) or pattern like 'GTV*'; "
                                             "several with ','"}
     PAT = {"type": "string", "description": "optional patient, e.g. P001"}
+    SET = {"type": "string", "description": "one plan/fraction only: e.g. 'Fx30', 'baseline' or an RTSTRUCT id. "
+                                            "Without it every structure set (fraction) is included."}
+    SETS_NOTE = (" A case can hold one structure set per plan/fraction; each result line starts with "
+                 "[RTSTRUCT plan], e.g. [P001-S01-22 Fx30]. Works on the existing MHA export.")
 
-    @tool("structure_stats", "Volume (ml), centroid, extent, number of parts of structures. Needs export_mha first.",
-          {"type": "object", "properties": {"select": SEL, "patient": PAT}, "required": ["select"]})
+    @tool("structure_stats", "Volume (ml), centroid, extent, number of parts of structures." + SETS_NOTE,
+          {"type": "object", "properties": {"select": SEL, "structure_set": SET, "patient": PAT},
+           "required": ["select"]})
     @guarded
     def structure_stats(ex, select, patient=None):
         return OPS.stats(ex, select, patient)
 
-    @tool("compare_structures", "Dice, Jaccard, Hausdorff, HD95 and mean surface distance between two structures.",
-          {"type": "object", "properties": {"a": SEL, "b": SEL, "patient": PAT}, "required": ["a", "b"]})
+    @tool("compare_structures", "Dice, Jaccard, Hausdorff, HD95 and mean surface distance between two structures "
+                                "(per structure set when both are in the same set)." + SETS_NOTE,
+          {"type": "object", "properties": {"a": SEL, "b": SEL, "structure_set": SET, "patient": PAT},
+           "required": ["a", "b"]})
     @guarded
     def compare_structures(ex, a, b, patient=None):
         return OPS.compare(ex, a, b, patient)
 
+    dose_by_folder = {}
+    for r in rows:
+        if r["modality"] == "RTDOSE":
+            dose_by_folder.setdefault(folder_of(r["id"]), r["id"])
+
     @tool("structure_values", "HU statistics inside a structure, or dose metrics (Dmean, D98/D95/D50/D2, Vx) if "
-                              "image_series_id is an RTDOSE. Default image: the reference CT.",
+                              "image_series_id is an RTDOSE. image_series_id='plan_dose' = for each structure the "
+                              "RTDOSE of its own plan (usual for dose questions). Default image: the structure's "
+                              "reference image. A given RTDOSE is used only with the structure set of its own "
+                              "plan." + SETS_NOTE,
           {"type": "object", "properties": {
-              "select": SEL, "image_series_id": {"type": "string"},
+              "select": SEL, "image_series_id": {"type": "string", "description": "series id, or 'plan_dose'"},
               "v_levels": {"type": "string", "description": "dose levels in Gy for Vx, e.g. '20,30'"},
-              "patient": PAT}, "required": ["select"]})
-    @guarded
-    def structure_values(ex, select, image_series_id=None, v_levels="", patient=None):
+              "structure_set": SET, "patient": PAT}, "required": ["select"]})
+    def structure_values(select, image_series_id=None, v_levels="", structure_set=None, patient=None):
+        img = (image_series_id or "").strip()
+        note = ""
+        if img.lower() in ("plan_dose", "dose", "own_dose", "rtdose"):
+            img = lambda s: dose_by_folder.get(folder_of(s["rtstruct"])) if s["rtstruct"] in by_id else None
+        elif img in by_id and by_id[img]["modality"] == "RTDOSE" and not structure_set:
+            # a dose belongs to one plan: use it with that plan's structure set, not with every fraction
+            same = [x["id"] for x in rows if x["modality"] == "RTSTRUCT" and folder_of(x["id"]) == folder_of(img)]
+            if same:
+                structure_set = same[0]
+                note = f"(dose {img} is from {plan_label(img)}: used with its structure set {same[0]})\n"
         v = tuple(float(x) for x in str(v_levels or "").split(",") if x.strip())
-        return OPS.values(ex, select, image_series_id, patient, v_levels=v)
+        out = guarded(lambda ex: OPS.values(ex, select, img or None, patient, v_levels=v))(
+            structure_set=structure_set)
+        return note + out
 
     @tool("merge_structures", f"Combine structures into one new structure (union, intersection or minus), "
                               f"optionally with a margin in mm; saved in {derived_dir}. rtstruct=true also writes "
@@ -388,7 +491,7 @@ def setup(params):
           {"type": "object", "properties": {
               "select": SEL, "name": {"type": "string"},
               "op": {"type": "string", "enum": ["union", "intersection", "minus"]},
-              "margin_mm": {"type": "number"}, "rtstruct": {"type": "boolean"}, "patient": PAT},
+              "margin_mm": {"type": "number"}, "rtstruct": {"type": "boolean"}, "structure_set": SET, "patient": PAT},
            "required": ["select", "name"]}, read_only=False)
     @guarded
     def merge_structures(ex, select, name, op="union", margin_mm=0, rtstruct=False, patient=None):
@@ -399,7 +502,7 @@ def setup(params):
                               "rtstruct=true also writes an RTSTRUCT.",
           {"type": "object", "properties": {
               "select": SEL, "mm": {"type": "string", "description": "'5', '-3' or '5,5,10'"},
-              "name": {"type": "string"}, "rtstruct": {"type": "boolean"}, "patient": PAT},
+              "name": {"type": "string"}, "rtstruct": {"type": "boolean"}, "structure_set": SET, "patient": PAT},
            "required": ["select", "mm"]}, read_only=False)
     @guarded
     def expand_structure(ex, select, mm, name=None, rtstruct=False, patient=None):
@@ -413,13 +516,13 @@ def setup(params):
           {"type": "object", "properties": {
               "labels": {"type": "string", "description": "structures=value, e.g. 'PTV=1; GTV*=2' "
                                                           "(';' between labels)"},
-              "name": {"type": "string"}, "patient": PAT}, "required": ["labels"]}, read_only=False)
+              "name": {"type": "string"}, "structure_set": SET, "patient": PAT}, "required": ["labels"]}, read_only=False)
     @guarded
     def make_labelmap(ex, labels, name="labels", patient=None):
         return OPS.labelmap(ex, derived_dir, str(labels), name or "labels", patient)
 
     @tool("crop_to_structure", "Crop the reference image and all masks to a structure's box plus margin (mm).",
-          {"type": "object", "properties": {"select": SEL, "margin_mm": {"type": "number"}, "patient": PAT},
+          {"type": "object", "properties": {"select": SEL, "margin_mm": {"type": "number"}, "structure_set": SET, "patient": PAT},
            "required": ["select"]}, read_only=False)
     @guarded
     def crop_to_structure(ex, select, margin_mm=20, patient=None):
@@ -427,19 +530,25 @@ def setup(params):
 
     @tool("resample_images", "Resample all images (linear) and masks (nearest) to a new spacing in mm.",
           {"type": "object", "properties": {
-              "spacing": {"type": "string", "description": "'1,1,1'"}, "patient": PAT},
+              "spacing": {"type": "string", "description": "'1,1,1'"}, "structure_set": SET, "patient": PAT},
            "required": ["spacing"]}, read_only=False)
     @guarded
     def resample_images(ex, spacing, patient=None):
         sp = num(spacing)
         return OPS.resample_all(ex, derived_dir, sp if isinstance(sp, list) else [sp] * 3, patient)
 
-    @tool("export_dvh", "Cumulative DVH (CSV) of structures for an RTDOSE series.",
-          {"type": "object", "properties": {"select": SEL, "dose_series_id": {"type": "string"}, "patient": PAT},
+    @tool("export_dvh", "Cumulative DVH (CSV) of structures for an RTDOSE series (used with the structure set "
+                        "of the same plan unless structure_set says otherwise).",
+          {"type": "object", "properties": {"select": SEL, "dose_series_id": {"type": "string"},
+                                            "structure_set": SET, "patient": PAT},
            "required": ["select", "dose_series_id"]}, read_only=False)
-    @guarded
-    def export_dvh(ex, select, dose_series_id, patient=None):
-        return OPS.write_dvh(ex, derived_dir, select, dose_series_id, patient)
+    def export_dvh(select, dose_series_id, structure_set=None, patient=None):
+        if not structure_set and dose_series_id in by_id:
+            same = [x["id"] for x in rows if x["modality"] == "RTSTRUCT"
+                    and folder_of(x["id"]) == folder_of(dose_series_id)]
+            structure_set = same[0] if same else None
+        return guarded(lambda ex: OPS.write_dvh(ex, derived_dir, select, dose_series_id, patient))(
+            structure_set=structure_set)
 
     n_st = sum(len(p["studies"]) for p in tree)
     return Toolset(name="dicom", tools=[list_series, get_series_details, view_thumbnail, list_structures, organize_dicom,

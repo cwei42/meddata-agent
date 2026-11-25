@@ -21,7 +21,10 @@ Predefined in the code: SERIES, INPUT, WORK, ARGS - do not redefine them.
 - SERIES = {series_id: {'modality', 'category', 'description', 'files': [paths sorted by slice]}}
   same ids as list_series (e.g. 'P001-S02-03'); number of slices = len(files). Use SERIES, not os.walk.
 - INPUT = '/data/input' (dataset, read-only), WORK = '/data/work' (the only place to write files). No network.
-- Structures (masks): run export_mha first (dry_run=false). Then STRUCTURES is a list of
+- Structures (masks): use the existing MHA export (only if STRUCTURES is empty, ask before export_mha).
+  Prefer the structure tools: structure_set='Fx30'/'baseline' picks one plan, image_series_id='plan_dose' gives
+  each structure the dose of its own plan; one result line per structure set (= fraction), never add them up.
+  STRUCTURES is a list of
   {'patient', 'rtstruct', 'name' (original), 'standard' (TG-263), 'naming', 'file' (mask path)} - never guess paths.
   Helpers (no import needed): combine_masks(paths, op='union'|'intersection'|'minus') -> image,
   mask_volume_ml(image_or_path), read_image(path), write_image(image, 'name.mha') -> saves into WORK.

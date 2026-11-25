@@ -282,6 +282,32 @@ def test_harness_text():
     check("harness: a copied '[tools used ...]' line is removed from answers",
           TOOLS_NOTE.sub("", a).strip() == "Report text.")
 
+    # numbers without a tool call in the turn -> the model is sent back once
+    from harness import Agent, Toolset, tool
+
+    class Stub:
+        def __init__(self, replies):
+            self.replies, self.calls = list(replies), 0
+
+        def chat(self, msgs, schemas):
+            self.calls += 1
+            return {"content": self.replies.pop(0)}
+
+    @tool("dummy", "x")
+    def dummy():
+        return "1"
+
+    m = Stub(["For Fx6 the GTVp volume is 124.32 ml.", "I do not know without a tool."])
+    ans = Agent(m, [Toolset("t", [dummy])], "sys").ask("And in Fx6?")
+    check("harness: a value given without any tool call is pushed back once",
+          m.calls == 2 and ans == "I do not know without a tool.", f"{m.calls} calls, answer {ans!r}")
+    m = Stub(["The RTSTRUCT is P001-S01-09.", "I do not know."])
+    ans = Agent(m, [Toolset("t", [dummy])], "sys").ask("Which RTSTRUCT belongs to P001-S01-11?")
+    check("harness: a series id that appears nowhere is pushed back", m.calls == 2, f"{m.calls} calls")
+    m = Stub(["There are 8 structure sets."])
+    ans = Agent(m, [Toolset("t", [dummy])], "sys").ask("How many?")
+    check("harness: answers without measured values are not pushed back", m.calls == 1)
+
 
 def test_german_names():
     from toolsets.dicom import structnames as N

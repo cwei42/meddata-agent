@@ -58,6 +58,19 @@ def _names(sel):
     return [s["name"] for s in sel]
 
 
+def _tag(s):
+    """Which structure set (and plan/fraction) a structure comes from - a case can hold one per fraction."""
+    if s.get("rtstruct") in (None, "", "derived"):
+        return "[derived]" if s.get("rtstruct") == "derived" else ""
+    return f"[{s['rtstruct']}{' ' + s['plan'] if s.get('plan') else ''}]"
+
+
+def _sets_note(sel):
+    sets = sorted({s["rtstruct"] for s in sel if s.get("rtstruct") not in (None, "", "derived")})
+    return (f"note: combines structures from {len(sets)} structure sets ({', '.join(sets)}), i.e. different "
+            f"plans/fractions - pass structure_set to use one") if len(sets) > 1 else ""
+
+
 def _safe(name):
     import re
     return re.sub(r"[^A-Za-z0-9_+\-^.]+", "_", name).strip("_")[:60] or "structure"
@@ -80,35 +93,49 @@ def stats(ex, select, patient=None):
     for p in _patients(ex, patient):
         for s in ex.find(select, patient=p):
             st = T.structure_stats(ex.mask(s))
-            lines.append(f"{p} {s['name']} ({s['standard']}): " + ", ".join(f"{k}={v}" for k, v in st.items()))
+            lines.append(f"{p} {_tag(s)} {s['name']} ({s['standard']}): " +
+                         ", ".join(f"{k}={v}" for k, v in st.items()))
     return "\n".join(lines) or f"no structure matches '{select}'"
 
 
 def compare(ex, a, b, patient=None):
+    """Per structure set when both are in the same set (one result per fraction); otherwise (e.g. GTV of the
+    plan vs GTV of Fx30) the two selections are compared as they are."""
     lines = []
     for p in _patients(ex, patient):
         sa, sb = ex.find(a, patient=p), ex.find(b, patient=p)
         if not sa or not sb:
             continue
-        ma = T.combine([ex.mask(s) for s in sa])[0]
-        mb = T.combine([ex.mask(s) for s in sb])[0]
-        r = T.compare(ma, mb)
-        lines.append(f"{p} {'+'.join(_names(sa))} vs {'+'.join(_names(sb))}: " +
-                     ", ".join(f"{k}={v}" for k, v in r.items()))
+        sets = [rt for rt in dict.fromkeys(s["rtstruct"] for s in sa + sb)]
+        pairs = [([s for s in sa if s["rtstruct"] == rt], [s for s in sb if s["rtstruct"] == rt]) for rt in sets]
+        pairs = [(x, y) for x, y in pairs if x and y] or [(sa, sb)]
+        for xa, xb in pairs:
+            ma = T.combine([ex.mask(s) for s in xa])[0]
+            mb = T.combine([ex.mask(s) for s in xb])[0]
+            r = T.compare(ma, mb)
+            ta = " ".join(sorted({_tag(s) for s in xa}))
+            tb = " ".join(sorted({_tag(s) for s in xb}))
+            lines.append(f"{p} {ta} {'+'.join(_names(xa))} vs {tb} {'+'.join(_names(xb))}: " +
+                         ", ".join(f"{k}={v}" for k, v in r.items()))
     return "\n".join(lines) or f"'{a}' and '{b}' not both found for any patient"
 
 
 def values(ex, select, image_id=None, patient=None, v_levels=(), d_levels=(98, 95, 50, 2)):
     """HU statistics (CT/MR/PT) or dose metrics (RTDOSE) inside structures. image_id: series id from the
-    export; default: the structure's reference image."""
+    export, or a function structure -> series id (e.g. the dose of the structure's own plan);
+    default: the structure's reference image."""
     lines = []
     for p in _patients(ex, patient):
         for s in ex.find(select, patient=p):
-            img = ex.image(image_id) if image_id else (ex.image(s["reference_id"]) if s["reference_id"] else None)
-            if not img and s.get("reference_mha") and not image_id:
+            iid = image_id(s) if callable(image_id) else image_id
+            if callable(image_id) and not iid:
+                lines.append(f"{p} {_tag(s)} {s['name']}: no RTDOSE in the same plan folder")
+                continue
+            img = ex.image(iid) if iid else (ex.image(s["reference_id"]) if s["reference_id"] else None)
+            if not img and s.get("reference_mha") and not iid:
                 img = {"id": "reference", "modality": "", "file": s["reference_mha"]}
             if not img:
-                lines.append(f"{p} {s['name']}: image {image_id or '(reference)'} not in the export")
+                lines.append(f"{p} {_tag(s)} {s['name']}: image {iid or '(reference)'} not in the export")
                 continue
             if img.get("patient") and img["patient"] != p:
                 lines.append(f"{p} {s['name']}: {img['id']} belongs to another patient - skipped")
@@ -117,7 +144,7 @@ def values(ex, select, image_id=None, patient=None, v_levels=(), d_levels=(98, 9
                 r = T.dose_stats(img["file"], ex.mask(s), d_levels=d_levels, v_levels=v_levels)
             else:
                 r = T.image_stats(img["file"], ex.mask(s))
-            lines.append(f"{p} {s['name']} in {img['id']} {img['modality']}: " +
+            lines.append(f"{p} {_tag(s)} {s['name']} in {img['id']} {img['modality']}: " +
                          ", ".join(f"{k}={v}" for k, v in r.items()))
     return "\n".join(lines) or f"no structure matches '{select}'"
 
@@ -147,6 +174,8 @@ def merge(ex, out_dir, select, name, op="union", margin_mm=0, patient=None, rtst
         lines.append(f"{p}: {name} = {op}({', '.join(_names(sel))})" + mtxt +
                      f" -> {st['volume_ml']} ml, {st.get('components', 0)} part(s)" +
                      (f"; {'; '.join(notes)}" if notes else "") + f" -> {os.path.relpath(path, out_dir)}")
+        if _sets_note(sel):
+            lines.append("    " + _sets_note(sel))
         if rtstruct:
             try:
                 rs = rtstruct(p, {name: m}, sel[0]["reference_id"])
@@ -274,7 +303,8 @@ def write_dvh(ex, out_dir, select, dose_id, patient=None, step=0.1):
     for p in _patients(ex, patient or dose["patient"]):
         for s in ex.find(select, patient=p):
             rows = T.dvh(dose["file"], ex.mask(s), step)
-            path = os.path.join(out_dir, p, f"dvh_{_safe(s['standard'])}.csv")
+            tag = "" if s.get("rtstruct") in (None, "", "derived") else _safe(s["rtstruct"]) + "_"
+            path = os.path.join(out_dir, p, f"dvh_{_safe(dose_id)}_{tag}{_safe(s['standard'])}.csv")
             if os.path.exists(path):
                 raise FileExistsError(path)
             os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -283,5 +313,5 @@ def write_dvh(ex, out_dir, select, dose_id, patient=None, step=0.1):
                 w.writerow(["dose_Gy", "volume_percent"])
                 w.writerows(rows)
             written.append(path)
-            lines.append(f"{p} {s['name']}: DVH {len(rows)} points -> {os.path.relpath(path, out_dir)}")
+            lines.append(f"{p} {_tag(s)} {s['name']}: DVH {len(rows)} points -> {os.path.relpath(path, out_dir)}")
     return "\n".join(lines) or f"no structure matches '{select}'", written
