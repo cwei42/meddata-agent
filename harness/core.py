@@ -12,6 +12,44 @@ TOOLS_NOTE = re.compile(r"\n?\[tools used for this answer:[^\]\n]*\]")
 # a measured value: number + unit (volume, dose, length, percent, HU)
 MEASURE = re.compile(r"\d+(?:[.,]\d+)?\s*(?:ml|mL|cc|cm³|c?Gy|mm|HU|%)(?![A-Za-z])")
 SERIES_ID = re.compile(r"\bP\d{3}-S\d{2}-\d{2,3}\b")      # series ids made up by the model, not seen anywhere
+_TC_BLOCK = re.compile(r"<tool_call>(.*?)(?:</tool_call>|$)", re.S)
+_TC_FUNC = re.compile(r"<function=([\w.-]+)>(.*?)(?:</function>|$)", re.S)
+_TC_PARAM = re.compile(r"<parameter=([\w.-]+)>\s*(.*?)\s*</parameter>", re.S)
+
+
+def text_tool_calls(content, tools):
+    """Tool calls written as text (Qwen XML '<tool_call><function=x><parameter=a>v</parameter>...' or JSON
+    '<tool_call>{"name": ..., "arguments": {...}}</tool_call>') -> (structured calls, remaining text).
+    Only known tool names are accepted."""
+    calls = []
+    for i, blk in enumerate(_TC_BLOCK.findall(content or "")):
+        name, args = None, {}
+        f = _TC_FUNC.search(blk)
+        if f:
+            name = f.group(1)
+            for k, v in _TC_PARAM.findall(f.group(2)):
+                try:
+                    args[k] = json.loads(v)
+                except (json.JSONDecodeError, ValueError):
+                    args[k] = v
+        else:
+            try:
+                d = json.loads(blk.strip())
+                name, args = d.get("name"), d.get("arguments") or {}
+                args = json.loads(args) if isinstance(args, str) else args
+            except (json.JSONDecodeError, AttributeError):
+                continue
+        if name in tools:
+            calls.append({"id": f"text{i}", "type": "function",
+                          "function": {"name": name, "arguments": json.dumps(args)}})
+    if not calls:
+        return [], content
+    return calls, _TC_BLOCK.sub("", content).strip()
+
+
+# the answer says a write happened ("has been completed", "exported", "已完成")
+DONE_CLAIM = re.compile(r"(?i)\b(done|completed|successfully|has been (exported|written|created|anonymized|saved)|"
+                        r"have been (exported|written|created|placed|saved)|are now (in|placed|saved))\b|已完成|已导出|完成了")
 
 
 def load_toolsets(names_with_params):
@@ -35,6 +73,7 @@ class Agent:
         # Default: refuse (a write tool can never run without an explicit confirm function).
         self.confirm = confirm or (lambda name, args: False)
         self.policy = policy or Policy()
+        self.writes = {"real": 0, "dry": 0, "declined": 0}     # write tool calls in the current question
         self.toolsets = toolsets
         self.tools = {}
         for ts in toolsets:
@@ -102,6 +141,9 @@ class Agent:
         seen, used = set(), []          # repeated identical calls are not run again; tools used -> history
         retries = 0
         nudged = False                  # one push when numbers appear without any tool call in this turn
+        claim_checked = False           # one push when the answer claims a write that did not happen
+        empty_retried = False           # one push when the model wrote no answer at all
+        self.writes = {"real": 0, "dry": 0, "declined": 0}
         self._trace(event="question", text=question)
         for step in range(self.policy.max_steps):
             self.on_event({"type": "thinking"})
@@ -127,6 +169,11 @@ class Agent:
                 return msg
             calls = [] if last else (m.get("tool_calls") or [])
             content = m.get("content") or ""
+            reasoning = m.get("reasoning_content") or ""
+            if not calls and not last:
+                # thinking models sometimes write the tool call as text instead of a structured call
+                parsed, content = text_tool_calls(content, self.tools)
+                calls = parsed
             # code-as-action (smolagents / Qwen-Agent style): a code block in the reply is run like a tool call,
             # so the model does not have to escape a whole script inside JSON
             text_call = None
@@ -159,11 +206,37 @@ class Agent:
                                                         "(they must come from tool output), or say that you do "
                                                         "not know."})
                 continue
+            if (not calls and not last and not claim_checked and self.writes["real"] == 0
+                    and (self.writes["dry"] or self.writes["declined"]) and DONE_CLAIM.search(content)):
+                # "The export has been completed" after only a dry run (or a declined write) is false
+                claim_checked = True
+                msgs.append({"role": "assistant", "content": content})
+                msgs.append({"role": "user", "content": "Nothing was written in this turn: the write tool only ran "
+                                                        "as a dry run or was not approved. Do not say it is done. "
+                                                        "Say what the dry run showed (or that it was not approved) "
+                                                        "and ask the user whether to run it."})
+                continue
+            if not calls and not last and not empty_retried and not re.sub(r"<think>.*?</think>", "", content,
+                                                                           flags=re.S).strip():
+                # thinking mode: the model sometimes puts everything into its reasoning and writes no answer
+                empty_retried = True
+                msgs.append({"role": "assistant", "content": ""})
+                msgs.append({"role": "user", "content": "You did not write an answer. Write your final answer to "
+                                                        "the user now, based on the tool results above."})
+                continue
             if not calls or calls_made >= self.policy.max_tool_calls:
                 answer = re.sub(r"<think>.*?</think>", "", content, flags=re.S)
                 # the history note "[tools used ...]" is the harness's, not the model's: a model that copies it
                 # invents tools it did not run - drop any such line from the answer
                 answer = TOOLS_NOTE.sub("", answer).strip()
+                if _TC_BLOCK.search(answer):
+                    # a tool call written as text that could not run any more (step or call limit reached)
+                    answer = (_TC_BLOCK.sub("", answer).strip() + "\n\n(the step limit was reached before that "
+                              "tool call could run - ask again, more specifically)").strip()
+                if not answer and reasoning.strip():
+                    # still nothing: give the end of the model's own reasoning, marked as such
+                    tail = reasoning.strip().split("\n\n")[-1].strip()
+                    answer = f"(no final answer written; the model's last reasoning step:)\n{tail[:1500]}"
                 answer = self.redact(answer) or "(no answer)"
                 self._remember(question, answer, used)
                 self._trace(event="answer", text=answer)
@@ -206,7 +279,10 @@ class Agent:
                              "Tell the user and do not retry unless asked.")
             self._trace(event="declined", name=name, args=args)
             self.on_event({"type": "declined", "name": name})
+            self.writes["declined"] += 1
         else:
+            if not t.read_only:
+                self.writes["dry" if t.needs_no_confirm(args) else "real"] += 1
             if not t.read_only and not t.needs_no_confirm(args):
                 seen.clear()            # a write changes the state: earlier calls may now give other results
             seen.add(sig)

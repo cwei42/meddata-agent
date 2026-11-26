@@ -237,7 +237,14 @@ def run(root, out, res, tree, rows, files, references=None, redact=lambda t: t, 
                 if r["modality"] == "RTDOSE":
                     _run(["convert", "--input-dose-img", os.path.join(src, os.listdir(src)[0]), "--output-dose-img", dst])
                 else:
-                    _run(["convert", "--input", src, "--output-img", dst])
+                    try:
+                        _run(["convert", "--input", src, "--output-img", dst])
+                    except RuntimeError:
+                        if len(paths) != 1:
+                            raise
+                        # plastimatch cannot read a series of ONE slice; SimpleITK can (geometry kept)
+                        import SimpleITK as sitk
+                        sitk.WriteImage(sitk.ReadImage(os.path.join(root, paths[0])), dst)
                 header_fixes += _clean_header(dst)
                 ds = pydicom.dcmread(os.path.join(root, paths[len(paths) // 2]), stop_before_pixels=True)
                 meta = _safe_json(ds, r, dst)

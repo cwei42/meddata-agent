@@ -78,6 +78,11 @@ def make_plan(root, res, tree, rows, files_by_id, show_phi=False, include_year=T
                         seen_sop[i["sop_uid"]] = dst
                     items.append((i["path"], dst, i["size"]))
                 series_lines.append(f"{p['label']}/{st_dir}/{se_dir}  ({k} files)")
+    # copies of the same image that the scan already folded into one (other name / folder): list them too
+    in_series = {f for fs in files_by_id.values() for f in fs}
+    for i in res["instances"]:
+        if i["path"] not in in_series and i["sop_uid"] in seen_sop:
+            dups.append((i["path"], seen_sop[i["sop_uid"]]))
     total = sum(x[2] for x in items)
     return {"root": root, "items": items, "duplicates": dups, "series": series_lines,
             "total_bytes": total, "show_phi": show_phi, "series_dirs": series_dirs}

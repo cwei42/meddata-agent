@@ -56,7 +56,9 @@ def _patient(ds, study, for_uid, modality):
     ds.StudyInstanceUID, ds.StudyDate, ds.StudyTime, ds.StudyID = study, "20240115", "101500", "1"
     ds.AccessionNumber, ds.ReferringPhysicianName = PHI["acc"], PHI["physician"]
     ds.InstitutionName, ds.InstitutionAddress = PHI["institution"], "Hauptstrasse 1, Sonnenhof"
-    ds.OperatorsName, ds.PerformingPhysicianName = "TECHNIKER^ANNA", PHI["physician"]
+    # staff name deliberately uncommon: dicognito invents common names ("ANNA"), and the verification then
+    # flags the invented name as the original one (a harmless false alarm that made this test flaky)
+    ds.OperatorsName, ds.PerformingPhysicianName = "TECHNIKER^ZYPRIANA", PHI["physician"]
     ds.DeviceSerialNumber, ds.StationName = PHI["serial"], "CT-SONNENHOF-1"
     ds.FrameOfReferenceUID, ds.Modality = for_uid, modality
     ds.StudyDescription = "Thorax Erika Mustermann"
@@ -290,6 +292,55 @@ def test_cli():
     check("cli: all command-line tools start and show --help", not bad, "; ".join(bad))
 
 
+def test_identifiers_and_names(tmp):
+    """check_identifiers finds planted identifiers (without showing them); suffix markers in structure names."""
+    from harness import load_toolsets
+    from toolsets.dicom import structnames as N
+    src = os.path.join(tmp, "phi_case", "original")
+    if os.path.isdir(src):
+        ts = load_toolsets([{"name": "dicom", "params": {"folder": src}}])[0]
+        T = {t.name: t for t in ts.tools}
+        out = T["check_identifiers"].fn()
+        leaked = [v for v in ("MUSTERMANN", "ERIKA", "PID48213", "19650312") if v.lower() in out.lower()]
+        check("identifiers: planted name / ID / birth date reported as present, values not shown",
+              "direct patient identifiers" in out and "PatientBirthDate" in out and not leaked, out[-200:])
+    want = {"Heart_P": "Heart", "Lung left_P": "Lung_L", "Total Lung_P": "Lungs", "Rectum_old": "Rectum",
+            "Parotis_li_neu": "Parotid_L"}
+    wrong = {n: N.standardize(n)["standard"] for n, s in want.items() if N.standardize(n)["standard"] != s}
+    check("names: site/version suffixes (_P, _old, _neu) ignored", not wrong, str(wrong))
+
+
+def test_thinking_harness():
+    """Thinking models: empty answer -> asked once, then reasoning used; tool call written as text -> executed."""
+    from harness import Agent, Toolset, tool
+    from harness.core import text_tool_calls
+
+    @tool("list_series", "x")
+    def list_series():
+        return "50 series"
+
+    class Stub:
+        def __init__(self, replies):
+            self.replies, self.calls = list(replies), 0
+
+        def chat(self, msgs, schemas):
+            self.calls += 1
+            return self.replies.pop(0)
+
+    calls, rest = text_tool_calls("Let me check.\n<tool_call>\n<function=list_series>\n</function>\n</tool_call>",
+                                  {"list_series": list_series})
+    check("thinking: a tool call written as text is recognised", len(calls) == 1 and rest == "Let me check.",
+          f"{calls} {rest!r}")
+    m = Stub([{"content": "", "reasoning_content": "thinking..."}, {"content": "There are 50 series."}])
+    ans = Agent(m, [Toolset("t", [list_series])], "sys").ask("How many?")
+    check("thinking: an empty answer is asked for once", m.calls == 2 and ans == "There are 50 series.", ans)
+    m = Stub([{"content": "", "reasoning_content": "a\n\nSo the answer is 50 series."},
+              {"content": "", "reasoning_content": "b\n\nThe answer is 50 series."}])
+    ans = Agent(m, [Toolset("t", [list_series])], "sys").ask("How many?")
+    check("thinking: still empty -> the end of the reasoning, marked", ans.startswith("(no final answer written")
+          and "50 series" in ans, ans)
+
+
 def test_harness_text():
     from harness.core import TOOLS_NOTE
     a = "Report text.\n[tools used for this answer: list_series, resample_images, export_mha]"
@@ -318,6 +369,25 @@ def test_harness_text():
     m = Stub(["The RTSTRUCT is P001-S01-09.", "I do not know."])
     ans = Agent(m, [Toolset("t", [dummy])], "sys").ask("Which RTSTRUCT belongs to P001-S01-11?")
     check("harness: a series id that appears nowhere is pushed back", m.calls == 2, f"{m.calls} calls")
+    # "done" after only a dry run -> pushed back
+    @tool("fake_export", "x", {"type": "object", "properties": {"dry_run": {"type": "boolean"}}},
+          read_only=False, safe_when=lambda a: a.get("dry_run", True) is not False)
+    def fake_export(dry_run=True):
+        return "plan: 34 images (dry run - nothing written)"
+
+    class StubCall(Stub):
+        def chat(self, msgs, schemas):
+            self.calls += 1
+            r = self.replies.pop(0)
+            return r if isinstance(r, dict) else {"content": r}
+
+    call = {"content": "", "tool_calls": [{"id": "1", "type": "function", "function": {
+        "name": "fake_export", "arguments": "{\"dry_run\": true}"}}]}
+    m = StubCall([call, "The export has been completed.", "Dry run only: 34 images would be exported. Run it?"])
+    from harness import Policy
+    ans = Agent(m, [Toolset("t", [fake_export])], "sys", Policy(allow_write=True)).ask("Export it")
+    check("harness: 'completed' after only a dry run is pushed back", m.calls == 3 and ans.startswith("Dry run"),
+          f"{m.calls} calls, answer {ans!r}")
     m = Stub(["There are 8 structure sets."])
     ans = Agent(m, [Toolset("t", [dummy])], "sys").ask("How many?")
     check("harness: answers without measured values are not pushed back", m.calls == 1)
@@ -337,7 +407,9 @@ def main():
                      ("layout", lambda: test_layout(tmp)), ("structures", test_structures),
                      ("German structure names", test_german_names),
                      ("anonymizer: empty attributes", test_empty_stays_empty),
-                     ("harness", test_harness_text), ("command-line tools", test_cli)]:
+                     ("harness", test_harness_text), ("command-line tools", test_cli),
+                     ("identifiers and names", lambda: test_identifiers_and_names(tmp)),
+                     ("thinking mode", test_thinking_harness)]:
         print(f"\n[{name}]")
         try:
             fn()

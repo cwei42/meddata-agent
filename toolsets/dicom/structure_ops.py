@@ -129,7 +129,7 @@ def values(ex, select, image_id=None, patient=None, v_levels=(), d_levels=(98, 9
         for s in ex.find(select, patient=p):
             iid = image_id(s) if callable(image_id) else image_id
             if callable(image_id) and not iid:
-                lines.append(f"{p} {_tag(s)} {s['name']}: no RTDOSE in the same plan folder")
+                lines.append(f"{p} {_tag(s)} {s['name']}: no RTDOSE identified for this plan")
                 continue
             img = ex.image(iid) if iid else (ex.image(s["reference_id"]) if s["reference_id"] else None)
             if not img and s.get("reference_mha") and not iid:

@@ -134,6 +134,7 @@ BOTH = {"bds", "both", "beide", "bilateral", "bilat", "total", "gesamt", "combin
         "ges"}
 # helper prefixes, checked on the original spelling: TG-263 "zPTV_opt" / "z_..." (not "ZENTRALEATEMWEGE"),
 # "_...", "x_..." and the German "H_..." (Hilfsstruktur)
+SUFFIX_MARKERS = {"p", "new", "old", "orig", "copy", "kopie", "bak", "neu", "alt", "ct", "mr", "plan", "final"}
 HELPER_PREFIX = re.compile(r"^(?:z(?=[A-Z0-9])|[zZxXhH]_|_)")
 HELPER = re.compile(r"\b(ring|opt|optim\w*|help\w*|hilf\w*|avoid\w*|dummy|tmp|temp|kontrast|contrast|"
                     r"artefact|artifact|artefakt|marker|clip|fiducial|bolus|ptv ?-|minus|plus|norm|block|"
@@ -314,6 +315,11 @@ def standardize(name, mapping=None):
         else:
             base.append(w)
         i += 1
+    # site / version markers at the end ("Heart_P", "Lung_new", "Rectum_old", "Bladder copy") are not part of the
+    # organ name: ignored, and said so in the note
+    ignored = []
+    while len(base) > 1 and base[-1] in SUFFIX_MARKERS and not SYNONYMS.get("".join(base)):
+        ignored.insert(0, base.pop())
     # glued laterality: "parotisli", "lungl", "lunge_re" already split; try trailing l/r/li/re on the last word
     hit = SYNONYMS.get("".join(base))
     if not hit and base and side is None:
@@ -341,7 +347,8 @@ def standardize(name, mapping=None):
         return res
     if prv is not None:
         std += f"_PRV{prv:02d}" if prv else "_PRV"
-    res.update(standard=std, status="synonym")
+    res.update(standard=std, status="synonym",
+               note=f"suffix '{'_'.join(ignored)}' ignored" if ignored else res["note"])
     return res
 
 

@@ -3,8 +3,8 @@
     "backend": "openai",
     "url": "http://127.0.0.1:8080",
     "temperature": 0.2,
-    "max_tokens": 2000,
-    "extra": {"chat_template_kwargs": {"enable_thinking": false}}
+    "max_tokens": 3000,
+    "extra": {"chat_template_kwargs": {"enable_thinking": true}}
   },
   "toolsets": [
     {"name": "dicom", "params": {"folder": "${folder}", "structure_names": "${structure_names:}",

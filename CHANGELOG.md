@@ -4,6 +4,47 @@ All notable changes are listed here. The project follows [Semantic Versioning](h
 MAJOR for incompatible changes to data layout or tools, MINOR for new functions, PATCH for fixes.
 Each release is a git tag `vX.Y.Z`; the deployed version and commit are recorded in every result.
 
+## [0.11.0] - 2026-11-26
+
+Stress test with a deliberately scrambled copy of the real case (files spread over 30 folders with arbitrary
+names, RT objects separated from their images, random file names, files without preamble, duplicates, junk).
+
+### Changed
+- **Plans are found from the DICOM content, not from folder names:** RTSTRUCT → its image; images, derived
+  images and RTDOSE → the plan whose image has the same origin; RTPLAN → the structure set with the same label;
+  plan name from the structure set label (`AKZ01_FX26_ADAPT` → `Fx26`). `list_series` shows `plan=` and filters by
+  plan; `structure_set`, `plan_dose` and dose pairing use these plans
+- The folder-based guesses of 0.10.0 are removed: with mixed-up folders they linked doses to the wrong plans
+- Plan grouping uses UID references first (RTDOSE → RTPLAN → RTSTRUCT); image origin and label only when UIDs
+  are broken; a label shared by several structure sets does not name a plan; with several patients the plan
+  name carries the patient
+- Redaction keeps anatomy / RT words even when they appear in a (test) patient name ("LUNG^TG244")
+- `list_series`: `slices=` for images, `1 file` for RT objects, `dose grid N planes` for doses (was `n=1`,
+  `1x144fr`, misread as single slices and fractions)
+- Prompts and tool descriptions use neutral placeholders instead of example plan names the model copied
+- TG-263: site / version suffixes (`_P`, `_old`, `_neu`, `copy`) are ignored and noted
+
+### Added
+- Harness guard: an answer that says something was done / exported after only a dry run or a declined write is
+  sent back once
+- **Thinking mode on** in all configs (Qwen3.5 reasoning, 3000 output tokens); the harness handles its failure
+  modes: an empty answer is asked for once, then the end of the reasoning is shown (marked); tool calls written
+  as text are recognised and run; a text tool call that can no longer run is removed from the answer
+- `check_identifiers` tool: which identifying fields are filled and in how many series (never the values), with a
+  verdict (direct identifiers / possibly pseudonyms / none); the prompts no longer claim the data is pseudonymised
+- MHA export of a CT with a single slice (SimpleITK fallback where plastimatch fails)
+
+### Hold-out evaluation (public datasets, fixed questions, no tuning on them)
+- Before these fixes, 3 public datasets (AAPM TG-244, OnkoDICOM, dicompyler): about 17 of 30 answers acceptable
+- After the fixes, 2 datasets never used during development (AAPM TG-236 brachytherapy, pydicom RT test files):
+  about 16 of 20; the 3 earlier datasets (now seen): about 27 of 30. Mean time per question about 50 s
+
+### Fixed
+- Duplicate files (the same image under another name or folder) made series look like 4D data, so the MHA export
+  skipped them; the scan now counts each image once (`duplicates` column in `series.csv`), organize still lists
+  the copies
+- Flaky anonymization test (an invented replacement name could equal the planted staff name)
+
 ## [0.10.0] - 2026-11-25
 
 First run on a real clinical dataset (anonymized adaptive MR-Linac case, German structure names) and a

@@ -48,6 +48,15 @@ def setup(params):
     all_tokens = set()
     for inst in res["instances"]:
         all_tokens |= S.name_tokens(inst["patient_name"])
+    # Test and phantom data often carry anatomy as "patient name" (LUNG^TG244, boost^breast). Masking those words
+    # would destroy every structure name ("Lung_L" -> "[NAME]_L"), so words of the anatomy / RT vocabulary are kept.
+    from . import structnames as _N
+    vocab = {w for syn in _N.SYNONYMS for w in re.findall(r"[a-z]+", syn)}
+    vocab |= {w.lower() for std in _N.STANDARD_NAMES for w in re.findall(r"[A-Za-z][a-z]+|[A-Z]+", std)}
+    vocab |= {"ptv", "ctv", "gtv", "itv", "body", "boost", "plan", "test", "phantom", "case", "anon", "thorax",
+              "abdomen", "pelvis", "head", "neck", "breast", "chest", "brain", "lung", "lungs", "prostate", "rectum",
+              "anal", "bladder", "spine", "tumor", "bed", "nodes", "imrt", "vmat", "sbrt", "and"}
+    all_tokens = {t for t in all_tokens if t.lower() not in vocab}
 
     def redact(text):
         return S.mask_name(text, all_tokens)[0] if all_tokens else text
@@ -66,39 +75,126 @@ def setup(params):
                  if p[0] in inst_by_path and inst_by_path[p[0]].get("series_uid")}
     sop_to_id = {i["sop_uid"]: sid for sid, ps in files.items() for p in ps
                  for i in [inst_by_path.get(p)] if i and i.get("sop_uid")}
+    # ---- plans from the DICOM content (never from folder names, which can be anything) ----------------------
+    # An RTSTRUCT names its image series; the images, derived images and RTDOSE of one plan share that image's
+    # origin (ImagePositionPatient); an RTPLAN carries the same label as its structure set. Each plan is named
+    # after its structure set label ("AKZ01_FX26_ADAPT" -> Fx26). Ambiguous matches are left unassigned.
+    def head(sid):
+        return pydicom.dcmread(os.path.join(root, files[sid][0]), stop_before_pixels=True)
+
+    def own_refs(sid):
+        """Image series an RTSTRUCT references by UID."""
+        try:
+            ds = head(sid)
+        except Exception:
+            return []
+        return [uid_to_id.get(str(se.SeriesInstanceUID), "missing")
+                for fr in ds.get("ReferencedFrameOfReferenceSequence", [])
+                for st in fr.get("RTReferencedStudySequence", [])
+                for se in st.get("RTReferencedSeriesSequence", [])]
+
+    def origin(sid):
+        """(x, y, lowest z) of a volume, rounded to 0.1 mm; None for non-volume objects."""
+        try:
+            ds = head(sid)
+            ipp = ds.get("ImagePositionPatient")
+            if ipp is None or len(ipp) != 3:
+                return None
+            zs = [inst_by_path[p]["slice_z"] for p in files[sid] if inst_by_path.get(p, {}).get("slice_z") is not None]
+            z = min(zs) if len(zs) > 1 else float(ipp[2])
+            return (round(float(ipp[0]), 1), round(float(ipp[1]), 1), round(z, 1))
+        except Exception:
+            return None
+
+    PLAN = {}               # series id -> RTSTRUCT id of its plan
+    PLAN_LABEL = {}         # RTSTRUCT id -> structure set label
+    PLAN_HOW = {}           # series id -> how it was matched
+    rts = [r["id"] for r in rows if r["modality"] == "RTSTRUCT"]
+    by_origin = {}
+    for rt in rts:
+        try:
+            ds = head(rt)
+            PLAN_LABEL[rt] = str(ds.get("StructureSetLabel") or ds.get("StructureSetName") or "").strip()
+        except Exception:
+            PLAN_LABEL[rt] = ""
+        PLAN[rt], PLAN_HOW[rt] = rt, "itself"
+        refs = [x for x in own_refs(rt) if x in by_id]
+        if refs and origin(refs[0]):
+            by_origin.setdefault(origin(refs[0]), []).append(rt)
+    for r in rows:
+        sid = r["id"]
+        if r["modality"] in ("RTSTRUCT", "RTPLAN"):
+            continue
+        o = origin(sid)
+        if o and len(by_origin.get(o, [])) == 1:
+            PLAN[sid], PLAN_HOW[sid] = by_origin[o][0], "same image origin"
+    def uid_ref(sid, kw):
+        """Series id of the object a UID reference points to (None if the UID is not in this data)."""
+        try:
+            for it in head(sid).get(kw, []):
+                rid = sop_to_id.get(str(it.get("ReferencedSOPInstanceUID", "")))
+                if rid:
+                    return rid
+        except Exception:
+            pass
+        return None
+
+    # RTPLAN: its own structure set reference first; the same label only as fallback (broken UIDs)
+    for r in rows:
+        if r["modality"] == "RTPLAN":
+            rt = uid_ref(r["id"], "ReferencedStructureSetSequence")
+            if rt in PLAN_LABEL:
+                PLAN[r["id"]], PLAN_HOW[r["id"]] = rt, "UID reference"
+                continue
+            try:
+                lab = str(head(r["id"]).get("RTPlanLabel") or "").strip().upper()
+            except Exception:
+                lab = ""
+            hit = [rt for rt in rts if lab and PLAN_LABEL[rt].upper() == lab and r["patient"] == by_id[rt]["patient"]]
+            if len(hit) == 1:
+                PLAN[r["id"]], PLAN_HOW[r["id"]] = hit[0], "same label"
+    # RTDOSE: dose -> plan -> structure set by UID first (overrides the origin match), or a direct reference
+    for r in rows:
+        if r["modality"] == "RTDOSE":
+            pl = uid_ref(r["id"], "ReferencedRTPlanSequence")
+            rt = PLAN.get(pl) if pl and PLAN_HOW.get(pl) == "UID reference" else None
+            rt = rt or uid_ref(r["id"], "ReferencedStructureSetSequence")
+            if rt in PLAN_LABEL:
+                PLAN[r["id"]], PLAN_HOW[r["id"]] = rt, "UID reference"
+    # a label shared by several structure sets ("RTstruct", "ANON") does not name a plan
+    label_count = {}
+    for rt, lab in PLAN_LABEL.items():
+        label_count[lab.upper()] = label_count.get(lab.upper(), 0) + 1
+    for rt, lab in list(PLAN_LABEL.items()):
+        if lab and label_count[lab.upper()] > 1 and not re.search(r"(?i)fx[_ -]?\d+", lab):
+            PLAN_LABEL[rt] = ""
+
     refs_cache = {}
 
     def rt_refs(sid):
-        """What an RT object points to: RTSTRUCT -> image series; RTPLAN -> structure set (+ its image);
-        RTDOSE -> plan and structure set. Series ids, 'missing' if not in this folder."""
+        """What an RT object points to: RTSTRUCT -> image series; RTPLAN -> structure set;
+        RTDOSE -> plan and structure set. UID references first; if those are broken, the content match."""
         if sid not in refs_cache:
             out = []
             try:
-                ds = pydicom.dcmread(os.path.join(root, files[sid][0]), stop_before_pixels=True)
-                for fr in ds.get("ReferencedFrameOfReferenceSequence", []):
-                    for st in fr.get("RTReferencedStudySequence", []):
-                        for se in st.get("RTReferencedSeriesSequence", []):
-                            out.append(uid_to_id.get(str(se.SeriesInstanceUID), "missing"))
+                ds = head(sid)
+                out += own_refs(sid)
                 for kw, label, mod in (("ReferencedRTPlanSequence", "plan", "RTPLAN"),
                                        ("ReferencedStructureSetSequence", "structures", "RTSTRUCT")):
                     for it in ds.get(kw, []):
                         rid = sop_to_id.get(str(it.get("ReferencedSOPInstanceUID", "")))
                         if rid:
                             out.append(f"{label} {rid}")
-                        else:
-                            # the UID points nowhere (some anonymizers break references): same folder instead
-                            same = [x["id"] for x in rows if x["modality"] == mod and x["id"] != sid
-                                    and folder_of(x["id"]) == folder_of(sid) and folder_of(sid) != "."]
-                            rid = same[0] if len(same) == 1 else None
-                            out.append(f"{label} {rid} (by folder - UID reference broken)" if rid
-                                       else f"{label} not in this data")
-                        if label == "plan" and rid:                        # dose -> plan -> structure set
-                            out += [x for x in rt_refs(rid) if x.startswith("structures")]
-                if ds.get("Modality") == "RTDOSE" and not any(x.startswith("structures") for x in out):
-                    same = [x["id"] for x in rows if x["modality"] == "RTSTRUCT"
-                            and folder_of(x["id"]) == folder_of(sid) and folder_of(sid) != "."]
-                    if len(same) == 1:
-                        out.append(f"structures {same[0]} (by folder)")
+                if ds.get("Modality") in ("RTDOSE", "RTPLAN") and PLAN.get(sid):
+                    rt, how = PLAN[sid], PLAN_HOW[sid]
+                    if not any(x.startswith("structures") for x in out):
+                        out.append(f"structures {rt} (by {how})")
+                    if ds.get("Modality") == "RTDOSE" and not any(x.startswith("plan") for x in out):
+                        pl = [x for x, p in PLAN.items() if p == rt and by_id[x]["modality"] == "RTPLAN"]
+                        if len(pl) == 1:
+                            out.append(f"plan {pl[0]} (by {how})")
+                if ds.get("Modality") in ("RTDOSE", "RTPLAN") and not any(x.startswith("structures") for x in out):
+                    out.append("structures not identifiable")
             except Exception:
                 pass
             refs_cache[sid] = list(dict.fromkeys(out))
@@ -106,10 +202,10 @@ def setup(params):
 
     @tool("list_series",
           "List series (one line each: id, modality, category, description, file count, slice thickness, "
-          "folder = the top folder it came from, e.g. one plan or fraction; refs = what an RT object points to: "
-          "RTSTRUCT -> the image series its contours are drawn on, RTPLAN/RTDOSE -> 'plan <id>' and "
-          "'structures <id>'). Series ids are numbered in scan order, NOT by fraction - group series of one "
-          "plan/fraction by folder. Optional filters narrow the list.",
+          "plan = the plan/fraction it belongs to, found from the DICOM content (structure set label, image "
+          "origin); refs = what an RT object points to; folder = where the files lie, "
+          "which can be arbitrary). Series ids are numbered in scan order, NOT by fraction - group by plan=. "
+          "Optional filters narrow the list.",
           {"type": "object", "properties": {
               "modality": {"type": "string", "description": "DICOM code: CT, MR, PT (=PET), NM, US, CR/DX (X-ray), MG, "
                                                             "XA, RTPLAN, RTSTRUCT, RTDOSE, SR, SEG, OT. Several allowed, "
@@ -117,9 +213,10 @@ def setup(params):
               "category": {"type": "string", "description": "image, localizer, derived_image, dose_report, "
                                                             "secondary_capture, structured_report, rt, other"},
               "text": {"type": "string", "description": "case-insensitive substring of description/protocol"},
-              "folder": {"type": "string", "description": "case-insensitive substring of the folder, e.g. Fx12"},
+              "plan": {"type": "string", "description": "only this plan, a name as shown in plan="},
+              "folder": {"type": "string", "description": "case-insensitive substring of the folder"},
               "patient": {"type": "string", "description": "patient pseudonym, e.g. P003"}}})
-    def list_series(modality=None, category=None, text=None, patient=None, folder=None):
+    def list_series(modality=None, category=None, text=None, patient=None, folder=None, plan=None):
         mods = None
         if modality:
             mods = set()
@@ -139,13 +236,23 @@ def setup(params):
             fol = folder_of(r["id"])
             if folder and folder.lower() not in fol.lower():
                 continue
+            pl = plan_label(r["id"])
+            if plan and not re.search(rf"(?i)(?<![a-z0-9]){re.escape(plan.strip())}(?![0-9])", pl):
+                continue
             prot = r["protocol_name"] if r["protocol_name"] and r["protocol_name"] != r["series_description"] else ""
             refs = rt_refs(r["id"]) if r["modality"] in ("RTSTRUCT", "RTPLAN", "RTDOSE") else []
+            if r["modality"] == "RTDOSE":
+                size = f"dose grid {r['frames']} planes" if r["frames"] else "dose grid"
+            elif r["modality"] in ("RTSTRUCT", "RTPLAN", "SR", "PR", "KO", "REG"):
+                size = f"{r['n_files']} file" + ("s" if r["n_files"] != 1 else "")
+            elif r["frames"] and r["n_files"] == 1:
+                size = f"1 multi-frame file, {r['frames']} frames"
+            else:
+                size = f"slices={r['n_files']}"
             out.append(f"{r['id']} | {r['modality']} | {r['category']} | {r['series_description'] or '-'}"
-                       f"{' / ' + prot if prot else ''} | n={r['n_files']}"
-                       f"{'x' + r['frames'] + 'fr' if r['frames'] else ''}"
+                       f"{' / ' + prot if prot else ''} | {size}"
                        f"{' | thick=' + r['slice_thickness'] if r['slice_thickness'] else ''}"
-                       f" | folder={fol}{' | refs=' + ','.join(refs) if refs else ''}"
+                       f" | plan={pl or '?'}{' | refs=' + ','.join(refs) if refs else ''} | folder={fol}"
                        f"{' | PHI-flag' if r['phi_in_text'] else ''}")
         if not out:
             return "no matching series"
@@ -155,18 +262,19 @@ def setup(params):
             m = line.split(" | ")[1]
             counts[m] = counts.get(m, 0) + 1
         head = f"{len(out)} series (" + ", ".join(f"{v} {k}" for k, v in sorted(counts.items())) + ")"
-        fols = {}
+        plans = {}
         for line in out:
-            f = line.split(" | folder=")[1].split(" | ")[0] if " | folder=" in line else "."
-            fols[f] = fols.get(f, 0) + 1
-        if len(fols) > 1:
-            def nat(f):
-                m = re.search(r"(?i)fx[_ -]?(\d+)", f)
-                return (1, int(m.group(1))) if m else (0, 0)
-            fx = [f for f in fols if nat(f)[0]]
-            head += (f"\n{len(fols)} folders" + (f" ({len(fx)} with a fraction number Fx.., "
-                                                f"{len(fols) - len(fx)} without)" if fx else "") + ": " +
-                     ", ".join(f"{f} [{fols[f]}]" for f in sorted(fols, key=lambda f: (nat(f), f))))
+            p_ = line.split(" | plan=")[1].split(" | ")[0] if " | plan=" in line else "?"
+            plans[p_] = plans.get(p_, 0) + 1
+        known = [p_ for p_ in plans if p_ != "?"]
+        if known:
+            def nat(p_):
+                m = re.match(r"Fx(\d+)$", p_)
+                return (1, int(m.group(1))) if m else ((2, 0) if p_ == "?" else (0, 0))
+            fx = [p_ for p_ in known if nat(p_)[0] == 1]
+            head += (f"\n{len(known)} plans" + (f" ({len(fx)} fractions Fx.., {len(known) - len(fx)} other)"
+                                                if fx else "") + ": " +
+                     ", ".join(f"{p_} [{plans[p_]} series]" for p_ in sorted(plans, key=lambda p_: (nat(p_), p_))))
         return head + ":\n" + "\n".join(out[:80]) + more
 
     @tool("get_series_details",
@@ -185,9 +293,10 @@ def setup(params):
             d["contours_drawn_on"] = rt_refs(series_id) or "not stated in the file"
         elif r["modality"] in ("RTPLAN", "RTDOSE"):
             d["references"] = rt_refs(series_id) or "not stated in the file"
-        same = [x["id"] for x in rows if x["id"] != series_id and folder_of(x["id"]) == d["folder"]]
-        if same and d["folder"] != ".":
-            d["other_series_in_same_folder"] = same[:20]
+        if PLAN.get(series_id):
+            d["plan"] = plan_label(series_id)
+            d["plan_matched_by"] = PLAN_HOW[series_id]
+            d["other_series_of_this_plan"] = [x for x, p in PLAN.items() if p == PLAN[series_id] and x != series_id]
         for t in SAFE_TAGS:
             v = S.s(ds, t)
             if v:
@@ -228,6 +337,69 @@ def setup(params):
         img.convert("RGB").save(buf, format="PNG")
         return ToolResult(f"thumbnail of {series_id} attached ({img.size[0]}x{img.size[1]})",
                           ["data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()])
+
+    ID_FIELDS = ["PatientName", "PatientID", "OtherPatientIDs", "PatientBirthDate", "PatientSex", "PatientAge",
+                 "PatientAddress", "PatientTelephoneNumbers", "AccessionNumber", "InstitutionName",
+                 "InstitutionAddress", "ReferringPhysicianName", "PerformingPhysicianName", "OperatorsName",
+                 "PhysiciansOfRecord", "ReviewerName", "StationName", "DeviceSerialNumber", "StudyDate",
+                 "SeriesDate", "AcquisitionDate", "StudyID"]
+
+    @tool("check_identifiers",
+          "Check whether the files contain personal identifiers: patient name, ID, birth date, address, accession, "
+          "institution, staff names, device serial, dates, private tags. Reports which fields are filled and in how "
+          "many series - never the values. Use it for EVERY question about names, IDs, birth dates or anonymization; "
+          "the P001-style ids are only labels of this tool, the files themselves may still contain identifiers.")
+    def check_identifiers():
+        filled = {f: 0 for f in ID_FIELDS}
+        other_pn, private, removed, shapes, n = 0, 0, 0, {}, 0
+        for sid in files:
+            try:
+                ds = head(sid)
+            except Exception:
+                continue
+            n += 1
+            for f in ID_FIELDS:
+                if str(ds.get(f, "") or "").strip():
+                    filled[f] += 1
+            if str(ds.get("PatientIdentityRemoved", "")).upper() == "YES":
+                removed += 1
+            pn = str(ds.get("PatientName", "") or "").strip()
+            if pn:   # describe the form of the name, never the name itself
+                shape = ("code-like (digits / hex)" if re.search(r"\d", pn) or re.fullmatch(r"[0-9a-f-]{16,}", pn)
+                         else "starts with ANON" if pn.upper().startswith("ANON")
+                         else "looks like a person's name (letters, family^given)")
+                shapes[shape] = shapes.get(shape, 0) + 1
+            for el in ds.iterall():
+                if el.tag.is_private:
+                    private += 1
+                    break
+                if el.VR == "PN" and el.keyword not in ID_FIELDS and str(el.value or "").strip():
+                    other_pn += 1
+                    break
+        lines = [f"{n} series checked (one file each); values are never shown"]
+        hit = [f"{f}: filled in {c} of {n} series" for f, c in filled.items() if c]
+        lines += hit or ["no identifying field is filled"]
+        if shapes:
+            lines.append("PatientName form: " + "; ".join(f"{k} in {v} series" for k, v in shapes.items()))
+        if other_pn:
+            lines.append(f"other person-name fields filled in {other_pn} series")
+        lines.append(f"private tags in {private} series; PatientIdentityRemoved=YES in {removed} series")
+        strong = [f for f in ("PatientBirthDate", "PatientAddress", "PatientTelephoneNumbers", "OtherPatientIDs")
+                  if filled[f]]
+        if any(k.startswith("looks like a person") for k in shapes):
+            strong.insert(0, "PatientName (name-like)")
+        weak = [f for f in ("PatientName", "PatientID", "AccessionNumber") if filled[f] and not
+                (f == "PatientName" and strong and strong[0].startswith("PatientName"))]
+        if strong:
+            verdict = ("contains direct patient identifiers (" + ", ".join(strong) + ") - treat the data as "
+                       "identifiable")
+        elif weak:
+            verdict = ("contains " + ", ".join(weak) + " - these may be pseudonyms or real identifiers; "
+                       "the files are not proven anonymous")
+        else:
+            verdict = "no patient identifiers found in the checked headers"
+        lines.append("verdict: " + verdict)
+        return "\n".join(lines)
 
     from . import structnames as N
     names_map, _ = N.load_mapping(params.get("structure_names"))
@@ -367,16 +539,25 @@ def setup(params):
     from . import mha_tools as MT
     from . import structure_ops as OPS
 
+    FX = re.compile(r"(?i)(?<![a-z0-9])(fx|fraktion|fraction)[_ -]?(\d+)")
+
     def plan_label(sid):
-        """Short name of the plan/fraction a series belongs to: 'Fx12' from '..._Fx12_Adapt', else the folder."""
-        if sid not in by_id:
+        """Name of the plan a series belongs to, from its structure set label: 'Fx12' from 'AKZ01_FX12_ADAPT',
+        'baseline <label>' for a plan without fraction number; '' if the series belongs to no known plan."""
+        rt = PLAN.get(sid)
+        if not rt:
             return ""
-        f = folder_of(sid)
-        m = re.search(r"(?i)(?<![a-z0-9])(fx|fraktion|fraction)[_ -]?(\d+)", f)
-        return f"Fx{m.group(2)}" if m else ("plan " + f if f != "." else "")
+        lab = PLAN_LABEL.get(rt, "")
+        pat = f"{by_id[rt]['patient']} " if len({r['patient'] for r in rows}) > 1 else ""   # several patients
+        m = FX.search(lab)
+        if m:
+            return f"{pat}Fx{m.group(2)}"
+        # 'baseline' only makes sense next to adaptive fractions; otherwise just the plan's label
+        word = "baseline" if any(FX.search(x) for x in PLAN_LABEL.values()) else "plan"
+        return f"{pat}{word} {lab}".strip() if lab else f"plan of {rt}"
 
     def is_baseline(sid):
-        return sid in by_id and not re.search(r"(?i)(?<![a-z0-9])(fx|fraktion|fraction)[_ -]?\d+", folder_of(sid))
+        return plan_label(sid).startswith("baseline")
 
     def export():
         try:
@@ -400,7 +581,7 @@ def setup(params):
             keep = {rt for rt in sets if is_baseline(rt)}
         else:
             pat = re.compile(rf"(?i)(?<![a-z0-9]){re.escape(q)}(?![0-9])")
-            keep = {rt for rt in sets if pat.search(folder_of(rt)) or pat.search(plan_label(rt))}
+            keep = {rt for rt in sets if pat.search(plan_label(rt)) or pat.search(PLAN_LABEL.get(rt, ""))}
         if not keep:
             return None, (f"no structure set matches '{q}'. Structure sets: " +
                           ", ".join(f"{rt} ({plan_label(rt)})" for rt in sets))
@@ -435,10 +616,10 @@ def setup(params):
     SEL = {"type": "string", "description": "structure name (TG-263 or original) or pattern like 'GTV*'; "
                                             "several with ','"}
     PAT = {"type": "string", "description": "optional patient, e.g. P001"}
-    SET = {"type": "string", "description": "one plan/fraction only: e.g. 'Fx30', 'baseline' or an RTSTRUCT id. "
+    SET = {"type": "string", "description": "one plan only: a plan name as list_series shows it, or an RTSTRUCT id. "
                                             "Without it every structure set (fraction) is included."}
     SETS_NOTE = (" A case can hold one structure set per plan/fraction; each result line starts with "
-                 "[RTSTRUCT plan], e.g. [P001-S01-22 Fx30]. Works on the existing MHA export.")
+                 "[RTSTRUCT plan]. Works on the existing MHA export.")
 
     @tool("structure_stats", "Volume (ml), centroid, extent, number of parts of structures." + SETS_NOTE,
           {"type": "object", "properties": {"select": SEL, "structure_set": SET, "patient": PAT},
@@ -455,10 +636,11 @@ def setup(params):
     def compare_structures(ex, a, b, patient=None):
         return OPS.compare(ex, a, b, patient)
 
-    dose_by_folder = {}
+    dose_by_plan = {}                          # RTSTRUCT id -> the RTDOSE of the same plan (content match)
     for r in rows:
-        if r["modality"] == "RTDOSE":
-            dose_by_folder.setdefault(folder_of(r["id"]), r["id"])
+        if r["modality"] == "RTDOSE" and PLAN.get(r["id"]):
+            dose_by_plan.setdefault(PLAN[r["id"]], []).append(r["id"])
+    dose_by_plan = {k: v[0] for k, v in dose_by_plan.items() if len(v) == 1}
 
     @tool("structure_values", "HU statistics inside a structure, or dose metrics (Dmean, D98/D95/D50/D2, Vx) if "
                               "image_series_id is an RTDOSE. image_series_id='plan_dose' = for each structure the "
@@ -473,10 +655,10 @@ def setup(params):
         img = (image_series_id or "").strip()
         note = ""
         if img.lower() in ("plan_dose", "dose", "own_dose", "rtdose"):
-            img = lambda s: dose_by_folder.get(folder_of(s["rtstruct"])) if s["rtstruct"] in by_id else None
+            img = lambda s: dose_by_plan.get(s["rtstruct"])
         elif img in by_id and by_id[img]["modality"] == "RTDOSE" and not structure_set:
             # a dose belongs to one plan: use it with that plan's structure set, not with every fraction
-            same = [x["id"] for x in rows if x["modality"] == "RTSTRUCT" and folder_of(x["id"]) == folder_of(img)]
+            same = [PLAN[img]] if PLAN.get(img) else []
             if same:
                 structure_set = same[0]
                 note = f"(dose {img} is from {plan_label(img)}: used with its structure set {same[0]})\n"
@@ -544,14 +726,14 @@ def setup(params):
            "required": ["select", "dose_series_id"]}, read_only=False)
     def export_dvh(select, dose_series_id, structure_set=None, patient=None):
         if not structure_set and dose_series_id in by_id:
-            same = [x["id"] for x in rows if x["modality"] == "RTSTRUCT"
-                    and folder_of(x["id"]) == folder_of(dose_series_id)]
+            same = [PLAN[dose_series_id]] if PLAN.get(dose_series_id) else []
             structure_set = same[0] if same else None
         return guarded(lambda ex: OPS.write_dvh(ex, derived_dir, select, dose_series_id, patient))(
             structure_set=structure_set)
 
     n_st = sum(len(p["studies"]) for p in tree)
-    return Toolset(name="dicom", tools=[list_series, get_series_details, view_thumbnail, list_structures, organize_dicom,
+    return Toolset(name="dicom", tools=[list_series, get_series_details, view_thumbnail, list_structures,
+                                        check_identifiers, organize_dicom,
                                         anonymize_dicom, export_mha, structure_stats, compare_structures,
                                         structure_values, merge_structures, expand_structure, make_labelmap,
                                         crop_to_structure, resample_images, export_dvh],

@@ -276,6 +276,15 @@ def build_tree(instances, show_phi):
             ser_items = sorted(st["series"].items(),
                                key=lambda kv: (int(kv[1][0]["series_number"]) if kv[1][0]["series_number"].lstrip("-").isdigit() else 9999))
             for k, (se_uid, insts) in enumerate(ser_items, 1):
+                # the same image copied twice (another name / folder) counts once: duplicates would otherwise
+                # look like 4D data (two images per slice) and break exports
+                uniq, seen = [], set()
+                for i in sorted(insts, key=lambda i: i["path"]):
+                    key = i.get("sop_uid") or i["path"]
+                    if key not in seen:
+                        seen.add(key)
+                        uniq.append(i)
+                n_dup, insts = len(insts) - len(uniq), uniq
                 f0 = insts[0]
                 desc, f1 = mask_name(f0["series_description"], tokens)
                 prot, f2 = mask_name(f0["protocol_name"], tokens)
@@ -287,7 +296,7 @@ def build_tree(instances, show_phi):
                     "series_number": f0["series_number"], "modality": f0["modality"],
                     "series_description": desc, "protocol_name": prot,
                     "body_part": f0["body_part"], "image_type": f0["image_type"],
-                    "sop_class_uid": f0["sop_class_uid"], "n_files": len(insts),
+                    "sop_class_uid": f0["sop_class_uid"], "n_files": len(insts), "duplicates": n_dup,
                     "frames": f0["frames"], "slice_thickness": f0["slice_thickness"],
                     "matrix": f"{f0['rows']}x{f0['cols']}" if f0["rows"] else "",
                     "manufacturer": f0["manufacturer"], "model": f0["model"],
@@ -386,7 +395,7 @@ def llm_analyze(series_rows, url, batch=20):
 
 # ----------------------------------------------------------------- output
 CSV_FIELDS = ["id", "patient", "study", "series_number", "modality", "category", "sop_name",
-              "series_description", "protocol_name", "body_part", "n_files", "frames",
+              "series_description", "protocol_name", "body_part", "n_files", "duplicates", "frames",
               "slice_thickness", "matrix", "image_type", "manufacturer", "model",
               "burned_in_annotation", "phi_in_text", "n_folders", "example_folder",
               "llm_sequence_type", "llm_body_region", "llm_primary", "llm_phi_suspected", "llm_note"]

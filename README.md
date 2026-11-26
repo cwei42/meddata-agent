@@ -1,6 +1,6 @@
 # MedData Agent
 
-![version](https://img.shields.io/badge/version-0.10.0-blue)
+![version](https://img.shields.io/badge/version-0.11.0-blue)
 ![platform](https://img.shields.io/badge/platform-Jetson%20Orin%20Nano-76b900)
 ![model](https://img.shields.io/badge/LLM-local%20only-lightgrey)
 
@@ -252,6 +252,10 @@ Names a clinic uses differently go into `configs/structure_names.csv` (always wi
 Work on the MHA export; results go to `<case>/structures/`, never overwritten, each with a JSON describing the
 operation.
 
+- **Plans are found from the DICOM content, not from folder names:** a structure set names its image; images,
+  derived images and the dose of one plan share that image's origin; an RTPLAN carries its structure set's label;
+  the plan is named from that label (`AKZ01_FX26_ADAPT` → `Fx26`). Results are identical on a clean and on a
+  deliberately scrambled copy of the same data
 - **One structure set per plan or fraction:** every result line names its set, e.g. `[P001-S01-22 Fx30]`;
   `structure_set='Fx30'` / `'baseline'` / an RTSTRUCT id selects one
 - **Dose:** `image_series_id='plan_dose'` uses each structure's own plan dose; a single RTDOSE is used only with its
@@ -293,9 +297,11 @@ sequenceDiagram
 ```
 
 **Tools** (dicom toolset): `list_series`, `get_series_details`, `view_thumbnail`, `list_structures`,
+`check_identifiers`,
 `structure_stats`, `compare_structures`, `structure_values`; with approval: `organize_dicom`, `anonymize_dicom`,
 `export_mha`, `merge_structures`, `expand_structure`, `make_labelmap`, `crop_to_structure`, `resample_images`,
-`export_dvh`. `list_series` shows each series' folder (plan / fraction) and RT references.
+`export_dvh`. `list_series` shows each series' plan (from the DICOM content), RT references and folder, and can
+filter by plan (`plan='Fx12'`).
 
 **Own code (optional):** for tasks no tool covers, the agent writes a short Python script (`Thought:` + one code
 block). The user reads and approves it; it runs in a bubblewrap sandbox — dataset read-only, writes only to
@@ -309,6 +315,8 @@ block). The user reads and approves it; it runs in a bubblewrap sandbox — data
 | Repeat guard | an identical call is not run twice (reset after a write) |
 | Final step | no tools offered on the last step — the model must answer |
 | Context compaction | old outputs shortened to fit the 12k context |
+| Thinking mode | Qwen3.5 reasoning is on; an empty answer is asked for once, tool calls written as text are run |
+| False success | an answer saying something was done / exported after only a dry run or a declined write is sent back once |
 | Tool-list hygiene | a copied `[tools used …]` line is removed from answers |
 | Redaction | patient-name parts found in the data become `[NAME]` in tool output and answers |
 
@@ -333,7 +341,7 @@ needs approval (`--yes` never approves code).
 ## Testing and validation
 
 ```bash
-~/dicom-env/bin/python tests/run_tests.py     # on the Orin: 33 checks on synthetic data
+~/dicom-env/bin/python tests/run_tests.py     # on the Orin: 39 checks on synthetic data
 ```
 
 - **Anonymization:** identifiers planted in tags, private tags, nested sequences and free text must not appear
@@ -341,10 +349,20 @@ needs approval (`--yes` never approves code).
 - **Structures:** union / intersection / minus exact; margins against analytic spheres (Dice ≥ 0.92, mean surface
   distance ≤ 0.5 mm); label maps; RTSTRUCT round trip Dice 1.0
 - **Names:** 28 German clinical names → TG-263
-- **Harness and CLI:** unverified-value guard, tool-list hygiene, every `cli/` tool starts
+- **Harness and CLI:** unverified-value and false-success guards, tool-list hygiene, every `cli/` tool starts
 
 **Real-data stress test** (anonymized adaptive MR-Linac case, 8 plans, 30 questions): 25 of 30 answers fully
 correct after the 0.10.0 fixes (21 before); all unsafe requests refused or blocked by approval; no crashes.
+
+**Scrambled-data test** (same case, 3768 files spread over 30 folders with arbitrary names, RT objects separated
+from their images, random file names, 96 files without preamble, 60 duplicates, 16 junk files): report and
+organize find the same 50 series and 3768 unique images; MHA export complete; the agent answers as on the clean
+data (about 25 of 30) once plans come from the DICOM content.
+
+**Hold-out evaluation** (public datasets, 10 questions fixed before download, no tuning on them): about 17 of 30
+acceptable before the 0.11.0 fixes; after them about 16 of 20 on two datasets never used during development
+(AAPM TG-236 brachytherapy, pydicom RT test files). Numbers from development data are optimistic; hold-out
+numbers are the honest estimate.
 
 ---
 
