@@ -1,6 +1,6 @@
 # MedData Agent
 
-![version](https://img.shields.io/badge/version-0.12.0-blue)
+![version](https://img.shields.io/badge/version-0.12.1-blue)
 ![platform](https://img.shields.io/badge/platform-Jetson%20Orin%20Nano-76b900)
 ![model](https://img.shields.io/badge/LLM-local%20only-lightgrey)
 
@@ -257,7 +257,7 @@ sequenceDiagram
     H->>U: answer
 ```
 
-**Tools** (dicom toolset): `list_series`, `get_series_details`, `view_thumbnail`, `list_structures`,
+**Tools** (dicom toolset): `list_series`, `get_series_details`, `lookup_uid`, `view_thumbnail`, `list_structures`,
 `check_identifiers`,
 `structure_stats`, `compare_structures`, `structure_values`. Write tools: `organize_dicom`, `anonymize_dicom`,
 `export_mha`, `merge_structures`, `expand_structure`, `make_labelmap`, `crop_to_structure`, `resample_images`,
@@ -355,7 +355,7 @@ there is no network, and limits are 3 GB memory and 300 s.
 ### Automatic tests
 
 ```bash
-~/dicom-env/bin/python tests/run_tests.py     # on the Orin: 48 checks on synthetic data
+~/dicom-env/bin/python tests/run_tests.py     # on the Orin: 56 checks on synthetic data
 ```
 
 - **Anonymization:** identifiers planted in tags, private tags, nested sequences and free text must not appear

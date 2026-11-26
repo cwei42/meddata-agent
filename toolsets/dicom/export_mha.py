@@ -175,6 +175,8 @@ def plan_export(rows):
             skipped.append((r, "screenshot/report/ultrasound - not a volume, may contain burned-in text"))
         elif r["category"] == "localizer":
             skipped.append((r, "localizer"))
+        elif r["category"] == "multiframe_image":
+            skipped.append((r, "enhanced / legacy-converted multi-frame image - MHA export not validated yet"))
         elif r["modality"] not in EXPORT_MODALITIES:
             skipped.append((r, f"modality {r['modality']} not exported"))
         else:

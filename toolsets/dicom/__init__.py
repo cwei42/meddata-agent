@@ -18,6 +18,7 @@ import pydicom
 from harness import ToolResult, Toolset, tool
 from . import layout as L
 from . import scan as S
+from . import uids as U
 
 SAFE_TAGS = [
     "Modality", "BodyPartExamined", "ImageType", "SliceThickness", "SpacingBetweenSlices", "PixelSpacing",
@@ -210,8 +211,10 @@ def setup(params):
               "modality": {"type": "string", "description": "DICOM code: CT, MR, PT (=PET), NM, US, CR/DX (X-ray), MG, "
                                                             "XA, RTPLAN, RTSTRUCT, RTDOSE, SR, SEG, OT. Several allowed, "
                                                             "e.g. 'CR/DX'. Common names like PET also work."},
-              "category": {"type": "string", "description": "image, localizer, derived_image, dose_report, "
-                                                            "secondary_capture, structured_report, rt, other"},
+              "category": {"type": "string", "description": "image, multiframe_image, localizer, derived_image, "
+                                                            "dose_report, secondary_capture, structured_report, "
+                                                            "document, presentation_state, rt, registration, "
+                                                            "segmentation, other"},
               "text": {"type": "string", "description": "case-insensitive substring of description/protocol"},
               "plan": {"type": "string", "description": "only this plan, a name as shown in plan="},
               "folder": {"type": "string", "description": "case-insensitive substring of the folder"},
@@ -306,6 +309,22 @@ def setup(params):
             nv = np.cross(np.array(iop[:3], float), np.array(iop[3:], float))
             d["orientation"] = ["sagittal", "coronal", "axial"][int(np.argmax(np.abs(nv)))]
         return json.dumps(d, ensure_ascii=False)
+
+    @tool("lookup_uid",
+          "Look up a UID in the DICOM standard dictionary (offline): what a SOP class UID means (CT image, RT "
+          "plan, treatment record ...) and its category here, what a transfer syntax is (compressed, lossy), "
+          "well-known frames of reference. Also searches by words, e.g. 'RT treatment record' or 'JPEG 2000'. "
+          "Instance UIDs (Study/Series/SOP Instance, Frame of Reference) are not in the dictionary.",
+          {"type": "object", "properties": {"query": {"type": "string",
+                                                      "description": "a UID, or words of its name"}},
+           "required": ["query"]})
+    def lookup_uid(query):
+        res = U.lookup(query)
+        uid = res.get("uid")
+        if uid and res.get("type") == "SOP Class":
+            used = [r["id"] for r in rows if r.get("sop_class_uid") == uid]
+            res["series_in_this_case"] = used[:20] if used else "none"
+        return json.dumps(res, ensure_ascii=False)
 
     @tool("view_thumbnail", "Look at the middle image of a series (returned to you as a picture).",
           {"type": "object", "properties": {"series_id": {"type": "string"}}, "required": ["series_id"]})
@@ -735,7 +754,7 @@ def setup(params):
             structure_set=structure_set)
 
     n_st = sum(len(p["studies"]) for p in tree)
-    return Toolset(name="dicom", tools=[list_series, get_series_details, view_thumbnail, list_structures,
+    return Toolset(name="dicom", tools=[list_series, get_series_details, lookup_uid, view_thumbnail, list_structures,
                                         check_identifiers, organize_dicom,
                                         anonymize_dicom, export_mha, structure_stats, compare_structures,
                                         structure_values, merge_structures, expand_structure, make_labelmap,

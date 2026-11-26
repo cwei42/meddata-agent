@@ -34,6 +34,8 @@ from collections import defaultdict
 import pydicom
 from pydicom.errors import InvalidDicomError
 
+from . import uids as U
+
 # real-world exports often contain slightly invalid values; read them quietly
 warnings.filterwarnings("ignore", module="pydicom")
 pydicom.config.settings.reading_validation_mode = pydicom.config.IGNORE
@@ -41,37 +43,8 @@ pydicom.config.settings.reading_validation_mode = pydicom.config.IGNORE
 # ----------------------------------------------------------------- constants
 DICOMDIR_UID = "1.2.840.10008.1.3.10"
 
-# SOP Class UID -> (short name, category)
-SOP_CATEGORIES = {
-    "1.2.840.10008.5.1.4.1.1.2": ("CT Image", "image"),
-    "1.2.840.10008.5.1.4.1.1.2.1": ("Enhanced CT", "image"),
-    "1.2.840.10008.5.1.4.1.1.4": ("MR Image", "image"),
-    "1.2.840.10008.5.1.4.1.1.4.1": ("Enhanced MR", "image"),
-    "1.2.840.10008.5.1.4.1.1.128": ("PET Image", "image"),
-    "1.2.840.10008.5.1.4.1.1.20": ("NM Image", "image"),
-    "1.2.840.10008.5.1.4.1.1.1": ("CR Image", "image"),
-    "1.2.840.10008.5.1.4.1.1.1.1": ("DX Image", "image"),
-    "1.2.840.10008.5.1.4.1.1.1.2": ("Mammography", "image"),
-    "1.2.840.10008.5.1.4.1.1.6.1": ("Ultrasound", "image"),
-    "1.2.840.10008.5.1.4.1.1.3.1": ("US Multi-frame", "image"),
-    "1.2.840.10008.5.1.4.1.1.12.1": ("X-Ray Angio", "image"),
-    "1.2.840.10008.5.1.4.1.1.7": ("Secondary Capture", "secondary_capture"),
-    "1.2.840.10008.5.1.4.1.1.7.4": ("SC Multi-frame True Color", "secondary_capture"),
-    "1.2.840.10008.5.1.4.1.1.88.67": ("X-Ray Dose SR", "dose_report"),
-    "1.2.840.10008.5.1.4.1.1.88.11": ("Basic Text SR", "structured_report"),
-    "1.2.840.10008.5.1.4.1.1.88.22": ("Enhanced SR", "structured_report"),
-    "1.2.840.10008.5.1.4.1.1.88.33": ("Comprehensive SR", "structured_report"),
-    "1.2.840.10008.5.1.4.1.1.104.1": ("Encapsulated PDF", "document"),
-    "1.2.840.10008.5.1.4.1.1.11.1": ("Presentation State", "presentation_state"),
-    "1.2.840.10008.5.1.4.1.1.481.1": ("RT Image", "rt"),
-    "1.2.840.10008.5.1.4.1.1.481.2": ("RT Dose", "rt"),
-    "1.2.840.10008.5.1.4.1.1.481.3": ("RT Structure Set", "rt"),
-    "1.2.840.10008.5.1.4.1.1.481.5": ("RT Plan", "rt"),
-    "1.2.840.10008.5.1.4.1.1.481.8": ("RT Ion Plan", "rt"),
-    "1.2.840.10008.5.1.4.1.1.66.1": ("Spatial Registration", "registration"),
-    "1.2.840.10008.5.1.4.1.1.66.3": ("Deformable Registration", "registration"),
-    "1.2.840.10008.5.1.4.1.1.66.4": ("Segmentation", "segmentation"),
-}
+# SOP Class UID -> (short name, category): hand-set ones; every other SOP class is derived in uids.py
+SOP_CATEGORIES = U.OVERRIDES
 
 LOCALIZER_RE = re.compile(r"locali[sz]er|scout|survey|topogram|pilot|tri.?pilot|\bloc\b", re.I)
 DOSE_RE = re.compile(r"dose|dosis", re.I)
@@ -148,13 +121,7 @@ def read_header(path):
 def classify(series):
     """Rule-based category for a series (no LLM)."""
     sop = series["sop_class_uid"]
-    name, cat = SOP_CATEGORIES.get(sop, ("", ""))
-    if not cat:
-        try:
-            name = pydicom.uid.UID(sop).name if sop else "unknown"
-        except Exception:
-            name = "unknown"
-        cat = "other"
+    name, cat = U.sop_category(sop)
     text = " ".join([series["series_description"], series["protocol_name"]])
     itype = series["image_type"].upper()
     if cat in ("image", "secondary_capture"):
@@ -404,7 +371,7 @@ CAT_COLORS = {
     "image": "#2563eb", "localizer": "#9ca3af", "derived_image": "#7c3aed", "dose_report": "#d97706",
     "secondary_capture": "#db2777", "structured_report": "#d97706", "document": "#d97706",
     "rt": "#059669", "registration": "#0891b2", "segmentation": "#0891b2",
-    "presentation_state": "#9ca3af", "other": "#6b7280",
+    "presentation_state": "#9ca3af", "multiframe_image": "#60a5fa", "other": "#6b7280",
 }
 
 

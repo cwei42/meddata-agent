@@ -467,6 +467,47 @@ def test_german_names():
     check(f"names: {len(GERMAN_NAMES)} German clinical names -> TG-263", not wrong, str(wrong)[:300])
 
 
+def test_uids():
+    from pydicom._uid_dict import UID_dictionary as D
+    from toolsets.dicom import uids as U
+    from toolsets.dicom.export_mha import plan_export
+    # the hand-set table and the derived categories agree (Enhanced CT/MR stay 'image' by hand)
+    hand_only = {"1.2.840.10008.5.1.4.1.1.2.1", "1.2.840.10008.5.1.4.1.1.4.1"}
+    diff = {u: (c, U.derive_category(u, D[u][0])) for u, (_, c) in U.OVERRIDES.items()
+            if u not in hand_only and U.derive_category(u, D[u][0]) != c}
+    check(f"uids: {len(U.OVERRIDES) - len(hand_only)} hand-set SOP classes = derived category", not diff, str(diff))
+    storage = [u for u, e in D.items() if e[1] == "SOP Class" and "Storage" in e[0]]
+    cats = {u: U.sop_category(u)[1] for u in storage}
+    check(f"uids: all {len(storage)} storage SOP classes get a known category",
+          all(c in U.CATEGORY_HELP for c in cats.values()))
+    want = {"1.2.840.10008.5.1.4.1.1.130": "multiframe_image", "1.2.840.10008.5.1.4.1.1.2.2": "multiframe_image",
+            "1.2.840.10008.5.1.4.1.1.481.4": "rt", "1.2.840.10008.5.1.4.1.1.481.7": "rt",
+            "1.2.840.10008.5.1.4.1.1.481.10": "rt", "1.2.840.10008.5.1.4.34.7": "rt",
+            "1.2.840.10008.5.1.4.1.1.88.59": "structured_report", "1.2.840.10008.5.1.4.1.1.88.68": "dose_report",
+            "1.2.840.10008.5.1.4.1.1.7.2": "secondary_capture", "1.2.840.10008.5.1.4.1.1.66.5": "segmentation",
+            "1.2.840.10008.5.1.4.1.1.104.3": "document", "1.2.840.10008.5.1.4.1.1.11.2": "presentation_state",
+            "1.2.840.10008.5.1.4.1.1.13.1.3": "image", "1.2.840.10008.5.1.4.1.1.9.1.1": "other",
+            "1.2.840.10008.5.1.4.1.1.66": "other", "1.2.840.10008.5.1.4.1.1.2.1": "image"}
+    bad = {u: (c, U.sop_category(u)[1]) for u, c in want.items() if U.sop_category(u)[1] != c}
+    check("uids: new classes (treatment record, Enhanced PET, KOS, dose SR ...) classified right", not bad, str(bad))
+    r = U.lookup("1.2.840.10008.5.1.4.1.1.481.3")
+    check("uids: lookup by UID", r.get("name") == "RT Structure Set Storage" and r.get("category") == "rt", str(r))
+    r = U.lookup("rt treatment record")
+    found = {x["uid"] for x in r["results"]}
+    check("uids: lookup by words", {"1.2.840.10008.5.1.4.1.1.481.4", "1.2.840.10008.5.1.4.1.1.481.7"} <= found,
+          str(found))
+    r = U.lookup("1.2.826.0.1.3680043.8.498.12345")
+    check("uids: instance UID is not looked up as a standard UID", r.get("found") is False, str(r))
+    a, b = U.lookup("1.2.840.10008.1.2.4.90"), U.lookup("1.2.840.10008.1.2.1")
+    check("uids: transfer syntax compressed / lossless", a.get("compressed") is True and a.get("lossy") is False
+          and b.get("compressed") is False, f"{a} {b}")
+    rows = [{"id": "A", "modality": "CT", "category": "multiframe_image"},
+            {"id": "B", "modality": "CT", "category": "image"}]
+    todo, skipped = plan_export(rows)
+    check("uids: multi-frame enhanced images are not exported to MHA yet",
+          [r["id"] for r, _ in todo] == ["B"] and [r["id"] for r, _ in skipped] == ["A"])
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="orin_tests_")
     print(f"orin-agent regression tests (synthetic data) in {tmp}")
@@ -474,7 +515,7 @@ def main():
                      ("layout", lambda: test_layout(tmp)), ("structures", test_structures),
                      ("German structure names", test_german_names),
                      ("anonymizer: empty attributes", test_empty_stays_empty),
-                     ("harness", test_harness_text), ("structure classes", test_structure_categories),
+                     ("harness", test_harness_text), ("structure classes", test_structure_categories), ("UID dictionary", test_uids),
                      ("command-line tools", test_cli),
                      ("identifiers and names", lambda: test_identifiers_and_names(tmp)),
                      ("thinking mode", test_thinking_harness)]:

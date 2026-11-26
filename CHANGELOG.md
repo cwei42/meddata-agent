@@ -4,6 +4,21 @@ All notable changes are listed here. The project follows [Semantic Versioning](h
 MAJOR for incompatible changes to data layout or tools, MINOR for new functions, PATCH for fixes.
 Each release is a git tag `vX.Y.Z`; the deployed version and commit are recorded in every result.
 
+## [0.12.1] - 2026-11-26
+
+### Added
+- **`lookup_uid` tool:** looks up any UID of the DICOM standard offline (pydicom's dictionary, 482 UIDs): SOP
+  classes with their category, transfer syntaxes (compressed, lossy), well-known frames of reference. Also
+  searches by words. For a SOP class it lists the series of the case that use it.
+
+### Changed
+- **Series categories for all storage classes:** the category is derived from the SOP class UID and its standard
+  name, so all 207 storage classes get one (before: 28 by hand, the rest `other`). RT treatment records, RT
+  second-generation objects and delivery instructions are now `rt`, Key Object Selection is `structured_report`,
+  radiopharmaceutical / patient dose SR are `dose_report`. The 28 hand-set entries are kept and win.
+- New category `multiframe_image` for Enhanced / Legacy Converted images other than Enhanced CT and MR (e.g.
+  Enhanced PET, Legacy Converted CT). They are listed but not exported to MHA until multi-frame export is tested.
+
 ## [0.12.0] - 2026-11-26
 
 ### Changed
