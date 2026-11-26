@@ -79,8 +79,9 @@ class Agent:
         #   {"type": "thinking"} / {"type": "tool_call", name, args} / {"type": "tool_result", name, text, images}
         #   {"type": "declined", name} / {"type": "answer", text}
         self.on_event = on_event or (lambda ev: None)
-        # confirm(tool_name, args) -> bool; asked before any tool with read_only=False runs.
-        # Default: refuse (a write tool can never run without an explicit confirm function).
+        # confirm(tool_name, args) -> bool; asked before a call that deletes or replaces data
+        # (Tool.needs_approval). Default: refuse (such a call never runs without an explicit confirm function).
+        # Other writes run without asking unless Policy.confirm_writes is set.
         self.confirm = confirm or (lambda name, args: False)
         self.policy = policy or Policy()
         self.writes = {"real": 0, "dry": 0, "declined": 0}     # write tool calls in the current question
@@ -302,7 +303,7 @@ class Agent:
                 self.writes["declined"] += 1
                 res = ToolResult(note)
             self._trace(event="preview_only", name=name, args=args)
-        elif not t.read_only and not t.needs_no_confirm(args) and not self.confirm(
+        elif t.needs_approval(args, self.policy.confirm_writes) and not self.confirm(
                 name, {**args, "code": t.preview(args)} if t.preview else args):
             res = ToolResult("the user did NOT approve this action; nothing was changed. "
                              "Tell the user and do not retry unless asked.")

@@ -402,9 +402,11 @@ def test_harness_text():
     check("harness: 'can you ...?' questions are recognised", not bad, f"misread: {bad}")
     asked, ran = [], []
 
-    @tool("fake_anon", "x", {"type": "object", "properties": {"dry_run": {"type": "boolean"}}},
-          read_only=False, safe_when=lambda a: a.get("dry_run", True) is not False)
-    def fake_anon(dry_run=True):
+    @tool("fake_anon", "x", {"type": "object", "properties": {"dry_run": {"type": "boolean"},
+                                                            "overwrite": {"type": "boolean"}}},
+          read_only=False, safe_when=lambda a: a.get("dry_run", True) is not False,
+          deletes=lambda a: a.get("dry_run", True) is False and bool(a.get("overwrite")))
+    def fake_anon(dry_run=True, overwrite=False):
         ran.append(dry_run)
         return "plan: 12 files" if dry_run else "anonymized 12 files"
 
@@ -420,8 +422,28 @@ def test_harness_text():
     a = Agent(m, [Toolset("t", [fake_anon])], "sys", Policy(allow_write=True),
               confirm=lambda n, args: asked.append(n) or True)
     a.ask("Run the anonymization.")
-    check("harness: a plain request still asks for approval and writes", asked == ["fake_anon"] and False in ran,
+    check("harness: a plain request writes without asking", not asked and ran[-1] is False,
           f"ran={ran} asked={asked}")
+    call_ow = {"content": "", "tool_calls": [{"id": "1", "type": "function", "function": {
+        "name": "fake_anon", "arguments": "{\"dry_run\": false, \"overwrite\": true}"}}]}
+    del ran[:]
+    m = StubCall([call_ow, "Not replaced."])
+    a = Agent(m, [Toolset("t", [fake_anon])], "sys", Policy(allow_write=True),
+              confirm=lambda n, args: asked.append(n) or False)
+    a.ask("Run the anonymization again and replace the old one.")
+    check("harness: replacing (deleting) an earlier result asks first, and a no stops it",
+          asked == ["fake_anon"] and not ran, f"ran={ran} asked={asked}")
+    del asked[:]
+    m = StubCall([call, "Anonymized 12 files."])
+    a = Agent(m, [Toolset("t", [fake_anon])], "sys", Policy(allow_write=True, confirm_writes=True),
+              confirm=lambda n, args: asked.append(n) or True)
+    a.ask("Run the anonymization.")
+    check("harness: confirm_writes=true asks before every write", asked == ["fake_anon"], f"asked={asked}")
+    del asked[:]
+    m = StubCall([call, "Anonymized 12 files."])
+    a = Agent(m, [Toolset("t", [fake_anon])], "sys", Policy(allow_write=True))
+    a.ask("Run the anonymization.")
+    check("harness: without a confirm function a plain write still runs", ran[-1] is False, f"ran={ran}")
 
 
 def test_structure_categories():

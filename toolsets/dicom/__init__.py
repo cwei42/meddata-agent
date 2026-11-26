@@ -430,7 +430,7 @@ def setup(params):
     from . import organize as O
     state = {"plan": None}
     OVERWRITE = {"type": "boolean", "description": "true = replace an earlier result in that folder (only when the "
-                                                   "user asked for a new run; the user approves)"}
+                                                   "user asked for a new run; deletes the earlier result, the user must approve)"}
 
     def prepare_out(out, overwrite):
         """'' if the folder can be written. An earlier result is replaced only with overwrite=true
@@ -448,11 +448,12 @@ def setup(params):
     @tool("organize_dicom",
           f"Copy all DICOM files into a clean Patient/Study/Series folder structure at {out_dir}. "
           "Originals are not changed. Call with dry_run=true first to see the plan; "
-          "dry_run=false performs the copy (the user will be asked to approve).",
+          "dry_run=false performs the copy.",
           {"type": "object", "properties": {
               "dry_run": {"type": "boolean", "description": "true = only show the plan (default)"},
               "overwrite": OVERWRITE}},
-          read_only=False, safe_when=lambda a: a.get("dry_run", True) is not False)
+          read_only=False, safe_when=lambda a: a.get("dry_run", True) is not False,
+          deletes=lambda a: a.get("dry_run", True) is False and bool(a.get("overwrite")))
     def organize_dicom(dry_run=True, overwrite=False):
         if state["plan"] is None:
             state["plan"] = O.make_plan(root, res, tree, rows, files)
@@ -474,10 +475,11 @@ def setup(params):
     @tool("anonymize_dicom",
           f"Write an anonymized DICOM copy (Patient/Study/Series folders) to {anon_dir}. Uses dicognito plus "
           "extra rules; every output file is re-checked. Pixel data unchanged. dry_run=true shows the plan; "
-          "dry_run=false writes (the user will be asked to approve).",
+          "dry_run=false writes.",
           {"type": "object", "properties": {"dry_run": {"type": "boolean", "description": "true = only show plan"},
                                             "overwrite": OVERWRITE}},
-          read_only=False, safe_when=lambda a: a.get("dry_run", True) is not False)
+          read_only=False, safe_when=lambda a: a.get("dry_run", True) is not False,
+          deletes=lambda a: a.get("dry_run", True) is False and bool(a.get("overwrite")))
     def anonymize_dicom(dry_run=True, overwrite=False):
         plan = O.make_plan(root, res, tree, rows, files, include_year=False)
         if dry_run is not False:
@@ -502,8 +504,7 @@ def setup(params):
           "Each RTSTRUCT is put on the image series it references (found automatically) - normally leave "
           "reference_series_id out. reference_modality='CT' or 'MR' puts the masks on the CT or MR of the same "
           "plan instead (use it when the user asks for CT or MR). Pass reference_series_id only when the export "
-          "says a reference was not found. dry_run=true shows the plan; dry_run=false writes (the user will be "
-          "asked to approve).",
+          "says a reference was not found. dry_run=true shows the plan; dry_run=false writes.",
           {"type": "object", "properties": {
               "dry_run": {"type": "boolean", "description": "true = only show plan"},
               "reference_modality": {"type": "string", "enum": ["auto", "CT", "MR"],
@@ -512,7 +513,8 @@ def setup(params):
               "reference_series_id": {"type": "string", "description": "optional fallback image series id, used "
                                       "only for RTSTRUCTs whose own referenced series is missing"},
               "overwrite": OVERWRITE}},
-          read_only=False, safe_when=lambda a: a.get("dry_run", True) is not False)
+          read_only=False, safe_when=lambda a: a.get("dry_run", True) is not False,
+          deletes=lambda a: a.get("dry_run", True) is False and bool(a.get("overwrite")))
     def export_mha(dry_run=True, reference_series_id=None, reference_modality="auto", overwrite=False):
         if reference_series_id and reference_series_id not in by_id:
             return f"unknown series id {reference_series_id}"

@@ -28,9 +28,18 @@ class Tool:
     safe_when: Optional[Callable[[dict], bool]] = None
     # for write tools: extra text the user must see before approving (e.g. the code a skill will contain)
     preview: Optional[Callable[[dict], str]] = None
+    # for write tools: args for which the call deletes or replaces existing data (always asked, see Policy)
+    deletes: Optional[Callable[[dict], bool]] = None
 
     def needs_no_confirm(self, args):
         return bool(self.safe_when and self.safe_when(args))
+
+    def needs_approval(self, args, confirm_writes=False):
+        """True when the user must approve this call: deleting or replacing data always,
+        other writes only with Policy.confirm_writes. Read-only tools and dry runs never."""
+        if self.read_only or self.needs_no_confirm(args):
+            return False
+        return bool(confirm_writes or (self.deletes and self.deletes(args)))
 
     def schema(self):
         return {"type": "function", "function": {
@@ -53,12 +62,12 @@ class Toolset:
     text_action: Optional[Callable[[str], Optional[tuple]]] = None
 
 
-def tool(name, description, parameters=None, read_only=True, safe_when=None, preview=None):
+def tool(name, description, parameters=None, read_only=True, safe_when=None, preview=None, deletes=None):
     """Decorator: turn a function into a Tool. Use inside setup() so it can close over state."""
     def wrap(fn):
         return Tool(name=name, description=description,
                     parameters=parameters or {"type": "object", "properties": {}},
-                    fn=fn, read_only=read_only, safe_when=safe_when, preview=preview)
+                    fn=fn, read_only=read_only, safe_when=safe_when, preview=preview, deletes=deletes)
     return wrap
 
 

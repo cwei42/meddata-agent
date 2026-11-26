@@ -243,7 +243,7 @@ def setup(params):
               "purpose": {"type": "string", "description": "one sentence: what the script does"},
               "code": {"type": "string", "description": "complete Python script"}},
            "required": ["purpose", "code"]},
-          read_only=False)
+          read_only=False, deletes=lambda a: True)     # free code can also delete files in WORK -> always asked
     def run_python(code, purpose=""):
         ensure_work()
         res = run_code(code, inp, work, timeout, mem, index=index_file(), mha=mha_dir)
@@ -285,7 +285,7 @@ def setup(params):
               "script": {"type": "integer", "description": "optional: script number #N"},
               "args": {"type": "string", "description": "optional: ARGS keys it reads, e.g. 'modality: str'"}},
            "required": ["name", "description"]},
-          read_only=False,
+          read_only=False, deletes=lambda a: True,     # the user reads the code that becomes a skill
           preview=lambda a: (pick_script(a.get("script"))[0] or {}).get("code", "(no script)"))
     def save_skill(name, description, args="", script=None):
         chosen, err = pick_script(script)

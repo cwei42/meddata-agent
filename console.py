@@ -439,8 +439,9 @@ def act_agent():
                               subtitle="sandbox: dataset read-only, writes only to <dataset>_work, no network"))
                 return Confirm.ask("Save this code as a skill?" if name == "save_skill" else "Run this code?",
                                    default=False)
-            c.print(Panel(f"[bold]{name}[/]({args})\nOriginals are not changed; output goes next to the dataset.",
-                          title="✏️ Write action - approval needed", border_style="yellow"))
+            c.print(Panel(f"[bold]{name}[/]({args})\nThe earlier result in that folder is deleted. "
+                          "Originals are not changed.",
+                          title="⚠️ Deletes / replaces an earlier result - approval needed", border_style="yellow"))
             return Confirm.ask("Approve?", default=False)
         finally:
             if status["s"]:
