@@ -11,9 +11,12 @@ it is processed offline in a temporary encrypted space that is destroyed when th
 The idea is to speed up tedious work with medical DICOM data, such as anonymization, sorting and conversion,
 while keeping the data in a controlled, safe place and keeping the additional cost as low as possible. Here
 everything runs on an NVIDIA Orin Nano, which has only 8 GB of memory, shared by the CPU and the GPU.
-The model server takes about 5.6 GB of it while running: about 4.2 GB for the GPU (4-bit weights, vision
-projector, cache for a 12k-token context) and about 1.4 GB on the CPU side (prompt cache, runtime). The operating
-system and the DICOM tools work in the remaining 2 GB.
+The model takes 5.6 GB of it:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/memory_dark.png">
+  <img alt="Memory of the Orin Nano with the model loaded, 7.7 GB usable: model GPU buffers 4.2 GB, model CPU side 1.4 GB, together 5.6 GB for the model server, system, console and DICOM tools 0.8 GB, free 1.2 GB." src="docs/img/memory_light.png">
+</picture>
 
 **What it does**
 
