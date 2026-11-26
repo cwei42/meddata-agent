@@ -9,6 +9,7 @@ class Policy:
     allow_write: bool = False       # tools with read_only=False are hidden unless True
     max_tool_output: int = 6000     # characters of tool text passed to the model
     max_context_chars: int = 18000  # messages only (tool schemas come on top); model context 12k tokens
+    preview_on_question: bool = True  # "can you ...?" -> write tools only as a dry run, the user decides
 
     def allowed(self, tool):
         return tool.read_only or self.allow_write

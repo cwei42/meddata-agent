@@ -47,6 +47,16 @@ def text_tool_calls(content, tools):
     return calls, _TC_BLOCK.sub("", content).strip()
 
 
+# the user asks WHETHER something can be done ("can you anonymize?", "能不能导出？"): writes only as a preview
+ABILITY_Q = re.compile(r"(?i)^\s*(?:please\s+)?(?:can|could|would|are)\s+(?:you|we|i)\b|^\s*is\s+it\s+possible\b|"
+                       r"^\s*(?:kannst|könntest|koenntest)\s+du\b|^\s*ist\s+es\s+möglich\b|"
+                       r"能不能|能否|可不可以|是否可以|可以.{0,30}吗")
+
+
+def ability_question(text):
+    return bool(ABILITY_Q.search(str(text or "").strip()))
+
+
 # the answer says a write happened ("has been completed", "exported", "已完成")
 DONE_CLAIM = re.compile(r"(?i)\b(done|completed|successfully|has been (exported|written|created|anonymized|saved)|"
                         r"have been (exported|written|created|placed|saved)|are now (in|placed|saved))\b|已完成|已导出|完成了")
@@ -74,6 +84,7 @@ class Agent:
         self.confirm = confirm or (lambda name, args: False)
         self.policy = policy or Policy()
         self.writes = {"real": 0, "dry": 0, "declined": 0}     # write tool calls in the current question
+        self.preview_only = False                                # "can you ...?" question: writes only previewed
         self.toolsets = toolsets
         self.tools = {}
         for ts in toolsets:
@@ -144,6 +155,7 @@ class Agent:
         claim_checked = False           # one push when the answer claims a write that did not happen
         empty_retried = False           # one push when the model wrote no answer at all
         self.writes = {"real": 0, "dry": 0, "declined": 0}
+        self.preview_only = ability_question(question)
         self._trace(event="question", text=question)
         for step in range(self.policy.max_steps):
             self.on_event({"type": "thinking"})
@@ -273,6 +285,23 @@ class Agent:
                              "succeeded unless that result says so; fix the arguments or answer the user.")
         elif t is None:
             res = ToolResult(f"unknown tool {name}; available: {', '.join(self.tools)}")
+        elif not t.read_only and not t.needs_no_confirm(args) and self.preview_only and self.policy.preview_on_question:
+            # "can you ...?" asks whether, not to do it: show the dry run (if any) and let the user decide
+            note = ("NOT RUN: the user asked whether this can be done, not to do it now. Answer in words, "
+                    "and ask whether you should run it.")
+            seen.add(sig)
+            if "dry_run" in (t.parameters.get("properties") or {}):
+                dry = {**args, "dry_run": True}
+                self.writes["dry"] += 1
+                try:
+                    out = t.call(dry)
+                    res = ToolResult(note + " Preview (dry run) of what it would do:\n" + (out.text or ""), out.images)
+                except Exception as e:
+                    res = ToolResult(f"{note} (preview failed: {type(e).__name__}: {e})")
+            else:
+                self.writes["declined"] += 1
+                res = ToolResult(note)
+            self._trace(event="preview_only", name=name, args=args)
         elif not t.read_only and not t.needs_no_confirm(args) and not self.confirm(
                 name, {**args, "code": t.preview(args)} if t.preview else args):
             res = ToolResult("the user did NOT approve this action; nothing was changed. "

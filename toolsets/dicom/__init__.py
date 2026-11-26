@@ -614,7 +614,8 @@ def setup(params):
         return run
 
     SEL = {"type": "string", "description": "structure name (TG-263 or original) or pattern like 'GTV*'; "
-                                            "several with ','"}
+                                            "several with ','. 'OARS' = all organs at risk, 'TARGETS' = all "
+                                            "GTV/CTV/ITV/PTV"}
     PAT = {"type": "string", "description": "optional patient, e.g. P001"}
     SET = {"type": "string", "description": "one plan only: a plan name as list_series shows it, or an RTSTRUCT id. "
                                             "Without it every structure set (fraction) is included."}

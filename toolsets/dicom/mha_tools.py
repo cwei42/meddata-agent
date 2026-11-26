@@ -23,6 +23,22 @@ import SimpleITK as sitk
 from . import structnames as N
 
 
+def _is_oar(s):
+    """an organ: a recognised TG-263 name that is not a target, the body outline, a helper or a point"""
+    std = s.get("standard", "")
+    return s.get("naming") in ("standard", "synonym", "mapping") and std not in ("External", "Body") \
+        and not std.lower().startswith("z")
+
+
+def _is_target(s):
+    return s.get("naming") == "target"
+
+
+# select='OARS' / 'TARGETS' picks structures by class (names that could not be classified are in neither)
+CATEGORIES = {N.key(k): f for k, f in [("OARS", _is_oar), ("OAR", _is_oar), ("organs", _is_oar),
+                                        ("organs at risk", _is_oar), ("TARGETS", _is_target)]}
+
+
 # ------------------------------------------------------------------ export folder
 class Export:
     def __init__(self, folder, derived=None):
@@ -73,6 +89,14 @@ class Export:
         several separated by ','. Helper structures (z..., ring/opt) only with include_helpers."""
         out = []
         for q in [x.strip() for x in str(query).split(",") if x.strip()]:
+            cat = CATEGORIES.get(N.key(q))
+            if cat:                     # 'OARS' / 'TARGETS': by the TG-263 classification, not by name
+                for s in self.structures:
+                    if patient and s["patient"] != patient or rtstruct and s["rtstruct"] != rtstruct:
+                        continue
+                    if cat(s) and s not in out:
+                        out.append(s)
+                continue
             glob_q = any(c in q for c in "*?[")
             # plain words or synonyms ("brachial plexus", "Rueckenmark", "Lunge") -> the TG-263 base name;
             # a paired organ named without side matches both sides

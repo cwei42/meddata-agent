@@ -1,6 +1,6 @@
 # MedData Agent
 
-![version](https://img.shields.io/badge/version-0.11.0-blue)
+![version](https://img.shields.io/badge/version-0.11.1-blue)
 ![platform](https://img.shields.io/badge/platform-Jetson%20Orin%20Nano-76b900)
 ![model](https://img.shields.io/badge/LLM-local%20only-lightgrey)
 
@@ -361,8 +361,8 @@ data (about 25 of 30) once plans come from the DICOM content.
 
 **Hold-out evaluation** (public datasets, 10 questions fixed before download, no tuning on them): about 17 of 30
 acceptable before the 0.11.0 fixes; after them about 16 of 20 on two datasets never used during development
-(AAPM TG-236 brachytherapy, pydicom RT test files). Numbers from development data are optimistic; hold-out
-numbers are the honest estimate.
+(AAPM TG-236 brachytherapy, pydicom RT test files). With the 0.11.1 fixes about 17.5 of 20 on these two and
+27 of 30 on the other three. Numbers from development data are optimistic; hold-out numbers are the honest estimate.
 
 ---
 

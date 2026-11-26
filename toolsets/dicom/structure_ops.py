@@ -95,7 +95,7 @@ def stats(ex, select, patient=None):
             st = T.structure_stats(ex.mask(s))
             lines.append(f"{p} {_tag(s)} {s['name']} ({s['standard']}): " +
                          ", ".join(f"{k}={v}" for k, v in st.items()))
-    return "\n".join(lines) or f"no structure matches '{select}'"
+    return "\n".join(lines) or f"no structure matches '{select}' (list_structures shows the names; select='OARS' = all organs, 'TARGETS' = all targets)"
 
 
 def compare(ex, a, b, patient=None):
@@ -146,7 +146,7 @@ def values(ex, select, image_id=None, patient=None, v_levels=(), d_levels=(98, 9
                 r = T.image_stats(img["file"], ex.mask(s))
             lines.append(f"{p} {_tag(s)} {s['name']} in {img['id']} {img['modality']}: " +
                          ", ".join(f"{k}={v}" for k, v in r.items()))
-    return "\n".join(lines) or f"no structure matches '{select}'"
+    return "\n".join(lines) or f"no structure matches '{select}' (list_structures shows the names; select='OARS' = all organs, 'TARGETS' = all targets)"
 
 
 # ------------------------------------------------------------------ writing
@@ -314,4 +314,4 @@ def write_dvh(ex, out_dir, select, dose_id, patient=None, step=0.1):
                 w.writerows(rows)
             written.append(path)
             lines.append(f"{p} {_tag(s)} {s['name']}: DVH {len(rows)} points -> {os.path.relpath(path, out_dir)}")
-    return "\n".join(lines) or f"no structure matches '{select}'", written
+    return "\n".join(lines) or f"no structure matches '{select}' (list_structures shows the names; select='OARS' = all organs, 'TARGETS' = all targets)", written

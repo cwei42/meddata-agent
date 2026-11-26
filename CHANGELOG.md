@@ -4,6 +4,23 @@ All notable changes are listed here. The project follows [Semantic Versioning](h
 MAJOR for incompatible changes to data layout or tools, MINOR for new functions, PATCH for fixes.
 Each release is a git tag `vX.Y.Z`; the deployed version and commit are recorded in every result.
 
+## [0.11.1] - 2026-11-26
+
+Fixes from the 0.11.0 stress and hold-out evaluation.
+
+### Fixed
+- **Step limit:** DICOM configs allow 10 model steps and 20 tool calls per question (was 6 / 12); answers were cut
+  off before the last tool call. The prompt asks for one call with a pattern instead of one call per structure set
+- **Structure classes:** all structure tools accept `select='OARS'` (organs at risk by TG-263 recognition, without
+  External, targets and helper structures) and `select='TARGETS'` (GTV / CTV / ITV / PTV); the model invented
+  patterns like `OAR*`. "No structure matches" messages point to the two classes
+- **"Can you ...?" questions:** recognised in the harness (English, German, Chinese); a write tool then runs only
+  as a dry run, without an approval prompt, and the agent describes it and asks. Plain requests still ask for
+  approval. Policy option `preview_on_question` (off in the Python config)
+
+### Tests
+- 45 automatic tests (was 39); the stress script reads the expected series ids from the tools instead of fixed ids
+
 ## [0.11.0] - 2026-11-26
 
 Stress test with a deliberately scrambled copy of the real case (files spread over 30 folders with arbitrary

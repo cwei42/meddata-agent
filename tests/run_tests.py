@@ -392,6 +392,51 @@ def test_harness_text():
     ans = Agent(m, [Toolset("t", [dummy])], "sys").ask("How many?")
     check("harness: answers without measured values are not pushed back", m.calls == 1)
 
+    # "can you ...?" asks whether: a write runs only as its dry run, nobody is asked to approve
+    from harness.core import ability_question
+    yes = ["Can you run the anonymization?", "Could you export the MHA files?", "能不能导出 MHA？",
+           "Kannst du das anonymisieren?", "可以帮我匿名化吗"]
+    no = ["Export the structures as MHA masks.", "How many series are there?", "Run the anonymization.",
+          "Which plan can be used?"]
+    bad = [q for q in yes if not ability_question(q)] + [q for q in no if ability_question(q)]
+    check("harness: 'can you ...?' questions are recognised", not bad, f"misread: {bad}")
+    asked, ran = [], []
+
+    @tool("fake_anon", "x", {"type": "object", "properties": {"dry_run": {"type": "boolean"}}},
+          read_only=False, safe_when=lambda a: a.get("dry_run", True) is not False)
+    def fake_anon(dry_run=True):
+        ran.append(dry_run)
+        return "plan: 12 files" if dry_run else "anonymized 12 files"
+
+    call = {"content": "", "tool_calls": [{"id": "1", "type": "function", "function": {
+        "name": "fake_anon", "arguments": "{\"dry_run\": false}"}}]}
+    m = StubCall([call, "Yes: it would anonymize 12 files. Shall I run it?"])
+    a = Agent(m, [Toolset("t", [fake_anon])], "sys", Policy(allow_write=True),
+              confirm=lambda n, args: asked.append(n) or True)
+    ans = a.ask("Can you run the anonymization?")
+    check("harness: 'can you ...?' runs only the dry run and asks no approval",
+          ran == [True] and not asked and ans.endswith("run it?"), f"ran={ran} asked={asked} answer={ans!r}")
+    m = StubCall([call, "Anonymized 12 files."])
+    a = Agent(m, [Toolset("t", [fake_anon])], "sys", Policy(allow_write=True),
+              confirm=lambda n, args: asked.append(n) or True)
+    a.ask("Run the anonymization.")
+    check("harness: a plain request still asks for approval and writes", asked == ["fake_anon"] and False in ran,
+          f"ran={ran} asked={asked}")
+
+
+def test_structure_categories():
+    from toolsets.dicom.mha_tools import Export
+    ex = Export.__new__(Export)
+    ex.structures = [dict(patient="P001", rtstruct="R1", name=n, standard=s, naming=k) for n, s, k in [
+        ("BODY", "External", "synonym"), ("Herz", "Heart", "synonym"), ("Lunge li", "Lung_L", "synonym"),
+        ("Myelon", "SpinalCord", "synonym"), ("PTV_60", "PTV_6000", "target"), ("GTVp", "GTVp", "target"),
+        ("Ring", "zRing", "helper"), ("Tumor Bed", "Tumor Bed", "unmapped"), ("Iso", "Iso", "point")]]
+    got = lambda q: sorted(s["standard"] for s in ex.find(q))
+    check("structures: select='OARS' = organs only (no External, targets, helpers, unknown names)",
+          got("OARS") == ["Heart", "Lung_L", "SpinalCord"], str(got("OARS")))
+    check("structures: select='TARGETS' = GTV/CTV/PTV", got("TARGETS") == ["GTVp", "PTV_6000"], str(got("TARGETS")))
+    check("structures: 'organs at risk' works as well", got("organs at risk") == got("OARS"))
+
 
 def test_german_names():
     from toolsets.dicom import structnames as N
@@ -407,7 +452,8 @@ def main():
                      ("layout", lambda: test_layout(tmp)), ("structures", test_structures),
                      ("German structure names", test_german_names),
                      ("anonymizer: empty attributes", test_empty_stays_empty),
-                     ("harness", test_harness_text), ("command-line tools", test_cli),
+                     ("harness", test_harness_text), ("structure classes", test_structure_categories),
+                     ("command-line tools", test_cli),
                      ("identifiers and names", lambda: test_identifiers_and_names(tmp)),
                      ("thinking mode", test_thinking_harness)]:
         print(f"\n[{name}]")

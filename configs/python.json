@@ -12,5 +12,5 @@
     {"name": "python", "params": {"folder": "${folder}", "work": "${work:}", "mha": "${mha_output:}"}}
   ],
   "system_prompt": "prompts/python.md",
-  "policy": {"max_steps": 10, "max_tool_calls": 16, "allow_write": true, "max_tool_output": 3000}
+  "policy": {"max_steps": 10, "max_tool_calls": 16, "allow_write": true, "max_tool_output": 3000, "preview_on_question": false}
 }
