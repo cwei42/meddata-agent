@@ -508,6 +508,105 @@ def test_uids():
           [r["id"] for r, _ in todo] == ["B"] and [r["id"] for r, _ in skipped] == ["A"])
 
 
+def test_journal(tmp):
+    import json as _json
+    from harness import Agent, Policy, Toolset, tool
+    from toolsets.dicom import journal as J
+    case = os.path.join(tmp, "case_j")
+    os.makedirs(os.path.join(case, "original"))
+    orig = os.path.join(case, "original", "a.dcm")
+    open(orig, "w").write("ORIGINAL")
+    os.makedirs(os.path.join(case, "work"))
+    open(os.path.join(case, "work", "w.txt"), "w").write("1")
+    open(os.path.join(case, "work", "old.txt"), "w").write("old")
+    mha = os.path.join(case, "mha")
+
+    @tool("fake_export", "x", {"type": "object", "properties": {"dry_run": {"type": "boolean"},
+                                                              "overwrite": {"type": "boolean"}}},
+          read_only=False, safe_when=lambda a: a.get("dry_run", True) is not False,
+          deletes=lambda a: a.get("dry_run", True) is False and bool(a.get("overwrite")))
+    def fake_export(dry_run=True, overwrite=False):
+        if dry_run:
+            return "plan: 1 file"
+        if os.path.isdir(mha):
+            if not overwrite:
+                return "output folder is not empty"
+            J.move_to_trash(case, mha, "mha")
+        os.makedirs(mha)
+        open(os.path.join(mha, "x.mha"), "w").write("abcd" if overwrite else "abc")
+        return "exported 1 file"
+
+    @tool("look", "x", {"type": "object", "properties": {"text": {"type": "string"}}})
+    def look(text=""):
+        return "nothing"
+
+    @tool("run_python", "x", {"type": "object", "properties": {"code": {"type": "string"}}}, read_only=False)
+    def run_python(code=""):
+        open(os.path.join(case, "work", "w.txt"), "w").write("2")
+        os.remove(os.path.join(case, "work", "old.txt"))
+        open(os.path.join(case, "work", "new.txt"), "w").write("n")
+        return "ok"
+
+    class StubCall:
+        def __init__(self, replies):
+            self.replies = list(replies)
+
+        def chat(self, msgs, schemas):
+            r = self.replies.pop(0)
+            return r if isinstance(r, dict) else {"content": r}
+
+    def call(name, **args):
+        return {"content": "", "tool_calls": [{"id": "1", "type": "function", "function": {
+            "name": name, "arguments": _json.dumps(args)}}]}
+
+    j = J.Journal(case, redact=lambda t: t.replace("MUSTERMANN", "[NAME]"))
+    ts = Toolset("t", [fake_export, look, run_python])
+
+    def agent(replies, ok=True):
+        return Agent(StubCall(replies), [ts], "sys", Policy(allow_write=True), journal=j,
+                     confirm=lambda n, a: ok)
+
+    agent([call("fake_export", dry_run=False), "done"]).ask("Export it")
+    agent([call("fake_export", dry_run=False, overwrite=True), "done"]).ask("Export again, replace it")
+    agent([call("fake_export", dry_run=False, overwrite=True), "not done"], ok=False).ask("Replace it")
+    agent([call("look", text="MUSTERMANN"), "nothing"]).ask("Look")
+    agent([call("run_python", code="print(1)"), "ok"]).ask("Run code")
+    e = j.entries()
+    kinds = [(x["tool"], x["kind"], x["status"]) for x in e]
+    check("journal: every call is logged (write, replace, declined, read, code)", kinds == [
+        ("fake_export", "write", "done"), ("fake_export", "write", "done"), ("fake_export", "write", "declined"),
+        ("look", "read", "done"), ("run_python", "write", "done")], str(kinds))
+    check("journal: created files with size and sha256",
+          e[0].get("created") and e[0]["created"][0]["path"] == "mha/x.mha" and len(e[0]["created"][0]["sha256"]) == 64,
+          str(e[0].get("created")))
+    check("journal: overwrite moves the earlier result to the bin and is logged as approved",
+          e[1].get("approved") is True and e[1].get("moved_to_trash", [{}])[0].get("from") == "mha"
+          and os.path.isdir(os.path.join(case, e[1]["moved_to_trash"][0]["to"])), str(e[1]))
+    check("journal: names are redacted in the log", "MUSTERMANN" not in open(j.path, encoding="utf-8").read())
+    check("journal: free code keeps a copy of work/ as it was", e[4].get("backup", {}).get("folder") == "work",
+          str(e[4]))
+    rd = lambda p: open(os.path.join(case, p)).read() if os.path.exists(os.path.join(case, p)) else None
+    ok1, _ = j.undo_last()
+    check("journal: undo free code restores work/", ok1 and rd("work/w.txt") == "1" and rd("work/old.txt") == "old"
+          and rd("work/new.txt") is None, f"{rd('work/w.txt')} {rd('work/old.txt')} {rd('work/new.txt')}")
+    ok2, _ = j.undo_last()
+    check("journal: undo an overwrite brings the earlier result back", ok2 and rd("mha/x.mha") == "abc",
+          str(rd("mha/x.mha")))
+    ok3, _ = j.undo_last()
+    check("journal: undo the first write removes its output (into the bin)", ok3 and not os.path.exists(mha))
+    ok4, msg4 = j.undo_last()
+    check("journal: nothing left to undo, originals untouched",
+          not ok4 and msg4 == "nothing to undo" and open(orig).read() == "ORIGINAL", msg4)
+    s_ = j.summary()
+    check("journal: summary shows the undone steps", s_.count("[undone]") == 3 and s_.count("undid #") == 3, s_)
+    try:
+        J.move_to_trash(case, os.path.join(case, "original"), "original")
+        refused = False
+    except ValueError:
+        refused = True
+    check("journal: the originals can never be moved to the bin", refused and os.path.isfile(orig))
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="orin_tests_")
     print(f"orin-agent regression tests (synthetic data) in {tmp}")
@@ -515,7 +614,7 @@ def main():
                      ("layout", lambda: test_layout(tmp)), ("structures", test_structures),
                      ("German structure names", test_german_names),
                      ("anonymizer: empty attributes", test_empty_stays_empty),
-                     ("harness", test_harness_text), ("structure classes", test_structure_categories), ("UID dictionary", test_uids),
+                     ("harness", test_harness_text), ("structure classes", test_structure_categories), ("UID dictionary", test_uids), ("operation log", lambda: test_journal(tmp)),
                      ("command-line tools", test_cli),
                      ("identifiers and names", lambda: test_identifiers_and_names(tmp)),
                      ("thinking mode", test_thinking_harness)]:

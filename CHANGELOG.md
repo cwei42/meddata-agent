@@ -4,6 +4,21 @@ All notable changes are listed here. The project follows [Semantic Versioning](h
 MAJOR for incompatible changes to data layout or tools, MINOR for new functions, PATCH for fixes.
 Each release is a git tag `vX.Y.Z`; the deployed version and commit are recorded in every result.
 
+## [0.12.2] - 2026-11-27
+
+### Added
+- **Operation log per case** (`<case>/journal.jsonl`): every tool call of the agent (also read-only, declined
+  and only previewed ones), menu tools, import and export, with version, arguments (names redacted), approval
+  and the files created / changed / moved to the bin (size, sha256). New read-only tool `show_journal`.
+- **Undo** (console menu 9): undoes the newest step that is not undone yet. Created files go to the bin, a
+  replaced result comes back, `work/` is restored. Only the user can undo, the model cannot.
+- The log is exported as `JOURNAL.jsonl` next to a result, after the identifier check.
+
+### Changed
+- `overwrite=true` no longer deletes the earlier result: it is moved to `<case>/.trash/` (one earlier version
+  per step is kept). Before free Python code runs, `work/` is copied so in-place changes can be undone.
+- 11 new tests (67).
+
 ## [0.12.1] - 2026-11-26
 
 ### Added

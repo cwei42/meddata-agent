@@ -19,6 +19,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+from toolsets.dicom import journal as J  # noqa: E402
 from toolsets.dicom import layout as L   # noqa: E402
 
 from rich.console import Console          # noqa: E402
@@ -321,6 +322,8 @@ def act_import():
             os.rename(case, os.path.join(VAULT, new))
             c.print(f"[yellow]The name contained a patient identifier - case renamed to [bold]{new}[/].[/]")
             name, case = new, os.path.join(VAULT, new)
+        J.Journal(case, source="console").note("import", {"case": name}, "import", "done",
+                                               result=f"copied into {L.ORIGINAL}/ from the USB drive")
         c.print(f"case [bold]{name}[/]: data in {case}/{L.ORIGINAL}; each processing step gets its own "
                 f"folder in {case}/")
     finally:
@@ -388,9 +391,31 @@ def act_export():
                          f"{len(res['hits'])} with identifiers, {len(res['unchecked'])} not checkable\n"
                          f"identifiable by design: {'yes' if identifiable else 'no'}\n"
                          "checksums: MANIFEST.sha256 (verify with: sha256sum -c MANIFEST.sha256)\n")
-            c.print(f"[green]exported to {dst} (+ MANIFEST.sha256, EXPORT_INFO.txt)[/]")
+            extra = export_journal(case, dst, ids)
+            J.Journal(case, source="console").note("export", {"step": step}, "export", "done",
+                                                   result=f"{res['files']} files to the USB drive")
+            c.print(f"[green]exported to {dst} (+ MANIFEST.sha256, EXPORT_INFO.txt{extra})[/]")
     finally:
         usb_unmount(dev)
+
+
+def export_journal(case, dst, ids):
+    """Copy the case's operation log next to an export, after the same identifier check. '' if not copied."""
+    log = os.path.join(case, J.LOG)
+    if not os.path.isfile(log):
+        return ""
+    from toolsets.dicom import export_check as X
+    tmp = os.path.join(L.use_session_tmp(case), f"journal_{os.getpid()}")
+    os.makedirs(tmp, exist_ok=True)
+    try:
+        shutil.copy2(log, os.path.join(tmp, "JOURNAL.jsonl"))
+        if X.scan(tmp, ids)["hits"]:
+            c.print("[yellow]The operation log contains a patient identifier - it was NOT exported.[/]")
+            return ""
+        shutil.copy2(log, os.path.join(dst, "JOURNAL.jsonl"))
+        return ", JOURNAL.jsonl"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def ensure_model():
@@ -439,8 +464,8 @@ def act_agent():
                               subtitle="sandbox: dataset read-only, writes only to <dataset>_work, no network"))
                 return Confirm.ask("Save this code as a skill?" if name == "save_skill" else "Run this code?",
                                    default=False)
-            c.print(Panel(f"[bold]{name}[/]({args})\nThe earlier result in that folder is deleted. "
-                          "Originals are not changed.",
+            c.print(Panel(f"[bold]{name}[/]({args})\nThe earlier result in that folder is moved to the recycle "
+                          "bin (undo: menu 9). Originals are not changed.",
                           title="⚠️ Deletes / replaces an earlier result - approval needed", border_style="yellow"))
             return Confirm.ask("Approve?", default=False)
         finally:
@@ -449,8 +474,10 @@ def act_agent():
 
     with c.status("scanning dataset…"):
         ts = load_toolsets(cfg["toolsets"])
+    journal = J.Journal(ds, redact=ts[0].redact, source="agent") if L.case_dir(ds) else None
     agent = Agent(make_model(cfg["model"]), ts, open(os.path.join(HERE, cfg["system_prompt"])).read(),
-                  Policy(**cfg["policy"]), log=lambda s: None, confirm=confirm, on_event=on_event)
+                  Policy(**cfg["policy"]), log=lambda s: None, confirm=confirm, on_event=on_event,
+                  journal=journal)
     c.print(f"[green]{ts[0].describe}[/]\nAsk questions; empty line returns to the menu.")
     while True:
         q = Prompt.ask("\n[bold cyan]?[/]", default="")
@@ -483,14 +510,19 @@ def act_tool():
             ("auto", "the image each structure set refers to (recommended)"),
             ("CT", "the CT of the same plan"), ("MR", "the MR of the same plan")], lambda x: f"{x[0]:5} {x[1]}")
         if m:
-            run_cli("to_mha.py", ds, "--ref-modality", m[0])
+            run_cli("to_mha.py", ds, "--ref-modality", m[0], case=ds)
     elif t:
-        run_cli(*t[1])
+        run_cli(*t[1], case=ds)
 
 
-def run_cli(script, *args):
-    """A command-line tool from cli/ (the same tools you can run by hand)."""
-    return subprocess.run([PY, os.path.join(HERE, "cli", script), *args], cwd=HERE)
+def run_cli(script, *args, case=None):
+    """A command-line tool from cli/ (the same tools you can run by hand). With a case: recorded in its log."""
+    j = J.Journal(case, source="console") if case and L.case_dir(case) else None
+    ctx = j.begin(f"cli/{script}", {"args": [str(a) for a in args]}, "cli") if j else None
+    r = subprocess.run([PY, os.path.join(HERE, "cli", script), *args], cwd=HERE)
+    if j:
+        j.end(ctx, "done" if r.returncode == 0 else "error", f"exit code {r.returncode}")
+    return r
 
 
 def act_structures(ds):
@@ -498,7 +530,7 @@ def act_structures(ds):
     if not os.path.isdir(L.out(ds, "mha")):
         c.print("[yellow]No MHA export yet - run 'Export to MHA' first.[/]")
         return
-    run = lambda *a: run_cli("structures.py", ds, *a)
+    run = lambda *a: run_cli("structures.py", ds, *a, case=ds)
     run("list")
     t = pick("Structure tool", [
         ("stats    - volume, centroid, extent", "stats"), ("compare  - Dice, HD95 between two", "compare"),
@@ -538,6 +570,24 @@ def act_structures(ds):
         run(cmd, "--spacing", Prompt.ask("spacing mm x,y,z", default="1,1,1"))
     else:
         run(cmd, Prompt.ask("structures", default="GTV*"))
+
+
+def act_journal():
+    """Show a case's operation log; undo the newest step (only here, never by the model)."""
+    case = pick_dataset()
+    if not case:
+        return
+    j = J.Journal(case, source="console")
+    c.print(Panel(j.summary(30), title=f"operation log of {os.path.basename(case)} (newest last)"))
+    e = j.last_undoable()
+    if not e:
+        c.print("[dim]nothing to undo[/]")
+        return
+    c.print(f"Next undo: [bold]{j.describe(e)}[/]\n[dim]Files this step created go to the recycle bin, a replaced "
+            "earlier result comes back. Originals are never touched.[/]")
+    if Confirm.ask("Undo this step?", default=False):
+        ok, msg = j.undo_last()
+        c.print(f"[{'green' if ok else 'red'}]{msg}[/]")
 
 
 def act_status():
@@ -639,6 +689,7 @@ def main():
                 ("7", "Status and offline log"),
                 ("8", "Test mode: ON - switch off" if TEST["on"] else
                       "Test mode: work online with anonymized/synthetic data"),
+                ("9", "Operation log and undo (per case)"),
                 ("q", "Quit = destroy the session space")]
         for k, label in menu:
             c.print(f"  [cyan]{k}[/]  {label}")
@@ -650,7 +701,7 @@ def main():
         a = Prompt.ask("choice", default="")
         try:
             {"1": lambda: act_offline(not off), "2": act_vault, "3": act_import, "4": act_agent,
-             "5": act_tool, "6": act_export, "7": act_status, "8": act_test_mode,
+             "5": act_tool, "6": act_export, "7": act_status, "8": act_test_mode, "9": act_journal,
              "q": act_quit}.get(a, lambda: None)()
         except KeyboardInterrupt:
             c.print("\n[dim]cancelled[/]")

@@ -73,8 +73,12 @@ def load_toolsets(names_with_params):
 
 class Agent:
     def __init__(self, model, toolsets, system_prompt, policy=None, log=None, trace=None, confirm=None,
-                 on_event=None):
+                 on_event=None, journal=None):
         self.model = model
+        # journal: optional operation log, called around every tool call (kind: read / dry_run / write /
+        # declined / preview): begin(name, args, kind, approved) -> ctx, end(ctx, status, result),
+        # note(name, args, kind, status, approved). The harness does not know what it stores.
+        self.journal = journal
         # on_event(dict): live events for user interfaces
         #   {"type": "thinking"} / {"type": "tool_call", name, args} / {"type": "tool_result", name, text, images}
         #   {"type": "declined", name} / {"type": "answer", text}
@@ -303,11 +307,13 @@ class Agent:
                 self.writes["declined"] += 1
                 res = ToolResult(note)
             self._trace(event="preview_only", name=name, args=args)
+            self._journal_note(name, args, "preview", "not run")
         elif t.needs_approval(args, self.policy.confirm_writes) and not self.confirm(
                 name, {**args, "code": t.preview(args)} if t.preview else args):
             res = ToolResult("the user did NOT approve this action; nothing was changed. "
                              "Tell the user and do not retry unless asked.")
             self._trace(event="declined", name=name, args=args)
+            self._journal_note(name, args, "write", "declined", approved=False)
             self.on_event({"type": "declined", "name": name})
             self.writes["declined"] += 1
         else:
@@ -316,16 +322,41 @@ class Agent:
             if not t.read_only and not t.needs_no_confirm(args):
                 seen.clear()            # a write changes the state: earlier calls may now give other results
             seen.add(sig)
+            kind = "read" if t.read_only else ("dry_run" if t.needs_no_confirm(args) else "write")
+            approved = True if t.needs_approval(args, self.policy.confirm_writes) else None
+            ctx, jerr = None, ""
+            if self.journal:
+                try:
+                    ctx = self.journal.begin(name, args, kind, approved)
+                except Exception as e:
+                    jerr = f"(operation log failed: {type(e).__name__}: {e})"
+            status = "done"
             try:
                 res = t.call(args)
             except Exception as e:
                 res = ToolResult(f"tool error: {type(e).__name__}: {e}")
+                status = "error"
+            if ctx is not None:
+                try:
+                    self.journal.end(ctx, status, res.text or "")
+                except Exception as e:
+                    jerr = f"(operation log failed: {type(e).__name__}: {e})"
+            if jerr:
+                self.log(jerr)
+                res = ToolResult((res.text or "") + "\n" + jerr, res.images)
             first = (res.text or "").split("\n", 1)[0][:60]
             used.append(f"{name} ({first})" if not t.read_only else name)
         text = self.policy.clip(self.redact(res.text))
         self._trace(event="tool", name=name, args=args, result=text[:500], images=len(res.images))
         self.on_event({"type": "tool_result", "name": name, "text": text, "images": res.images})
         return text, [(name, img) for img in res.images]
+
+    def _journal_note(self, name, args, kind, status, approved=None):
+        if self.journal:
+            try:
+                self.journal.note(name, args, kind, status, approved)
+            except Exception as e:
+                self.log(f"(operation log failed: {type(e).__name__}: {e})")
 
     @staticmethod
     def _add_images(msgs, images):

@@ -1,6 +1,6 @@
 # MedData Agent
 
-![version](https://img.shields.io/badge/version-0.12.1-blue)
+![version](https://img.shields.io/badge/version-0.12.2-blue)
 ![platform](https://img.shields.io/badge/platform-Jetson%20Orin%20Nano-76b900)
 ![model](https://img.shields.io/badge/LLM-local%20only-lightgrey)
 
@@ -56,7 +56,7 @@ orin-console            # creates a new encrypted space
 2  Session space status         6  Export a result to USB (with identifier check)
 3  Import from USB drive        7  Status and offline log
 4  Ask the agent                8  Test mode (anonymized / synthetic data only)
-q  Quit = destroy the session space
+9  Operation log and undo       q  Quit = destroy the session space
 ```
 
 Typical session: **1** go offline → **3** import → **4** ask or **5** run a tool → **6** export → **q** quit.
@@ -190,7 +190,7 @@ Reference image for each structure set, in this order:
 
 A reference other than the named series must share its frame of reference; where UIDs are unusable
 (e.g. damaged by an earlier anonymizer) the report says so. An earlier result is replaced only on request
-(`overwrite=true`). This deletes the earlier result, so the user must approve it.
+(`overwrite=true`). The earlier result goes to the recycle bin of the case, and the user must approve it.
 
 ### TG-263 structure names
 
@@ -257,12 +257,12 @@ sequenceDiagram
     H->>U: answer
 ```
 
-**Tools** (dicom toolset): `list_series`, `get_series_details`, `lookup_uid`, `view_thumbnail`, `list_structures`,
+**Tools** (dicom toolset): `list_series`, `get_series_details`, `lookup_uid`, `show_journal`, `view_thumbnail`, `list_structures`,
 `check_identifiers`,
 `structure_stats`, `compare_structures`, `structure_values`. Write tools: `organize_dicom`, `anonymize_dicom`,
 `export_mha`, `merge_structures`, `expand_structure`, `make_labelmap`, `crop_to_structure`, `resample_images`,
 `export_dvh`. They write only to new places and run without asking. A call that replaces an earlier result
-(`overwrite=true`) deletes it and needs approval.
+(`overwrite=true`) moves it to the recycle bin and needs approval.
 `list_series` shows each series' plan (from the DICOM content), RT references and folder, and can
 filter by plan (`plan='Fx12'`).
 
@@ -327,11 +327,28 @@ stateDiagram-v2
 |---|---|
 | Reading, listing, measuring | never |
 | Writing a new result (organize, anonymize, MHA export, structure tools) | no, results go to new folders and originals are never changed |
-| Replacing an earlier result (`overwrite=true`) | **yes**, the earlier result is deleted |
+| Replacing an earlier result (`overwrite=true`) | **yes**, the earlier result goes to the recycle bin |
 | Own Python code, saving a skill | **yes**, the user reads the code first because it could delete files in `work/` |
 | "Can you ...?" questions | nothing is written, a write tool runs only as a dry run and the agent asks |
 
 `confirm_writes: true` in a config asks before every write. `--yes` on the command line never approves code.
+
+### Operation log and undo
+
+Every step is written to `<case>/journal.jsonl`: time, version, tool, arguments, approval and the files the
+step created, changed or moved to the recycle bin (with size and sha256). Agent calls, read-only queries,
+declined calls, tools run from the menu, import and export are all recorded. Names are redacted in the log.
+
+Nothing is deleted on the way:
+
+- `overwrite=true` moves the earlier result to `<case>/.trash/`. The bin keeps one earlier version per step.
+- Before free Python code runs, `work/` is copied, so changes to existing files can be undone.
+- Menu **9** shows the log and undoes the newest step that is not undone yet. Files it created go to the bin,
+  a replaced result comes back, `work/` gets its old state. The undo is logged as a step of its own.
+
+Only the user can undo, in the console. The model can read the log (`show_journal`) but cannot undo.
+The log is exported next to a result (`JOURNAL.jsonl`) after the same identifier check. Log and bin live in
+the session space and are destroyed with it.
 
 ### Sandbox for own code
 
@@ -355,7 +372,7 @@ there is no network, and limits are 3 GB memory and 300 s.
 ### Automatic tests
 
 ```bash
-~/dicom-env/bin/python tests/run_tests.py     # on the Orin: 56 checks on synthetic data
+~/dicom-env/bin/python tests/run_tests.py     # on the Orin: 67 checks on synthetic data
 ```
 
 - **Anonymization:** identifiers planted in tags, private tags, nested sequences and free text must not appear

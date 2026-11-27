@@ -9,7 +9,6 @@ import io
 import json
 import os
 import re
-import shutil
 import sys
 
 import numpy as np
@@ -19,6 +18,7 @@ from harness import ToolResult, Toolset, tool
 from . import layout as L
 from . import scan as S
 from . import uids as U
+from . import journal as J
 
 SAFE_TAGS = [
     "Modality", "BodyPartExamined", "ImageType", "SliceThickness", "SpacingBetweenSlices", "PixelSpacing",
@@ -326,6 +326,22 @@ def setup(params):
             res["series_in_this_case"] = used[:20] if used else "none"
         return json.dumps(res, ensure_ascii=False)
 
+    @tool("show_journal",
+          "The operation log of this case: which steps ran (tool, arguments, approval, time), which files they "
+          "created or replaced, and what was undone. Use it for questions like 'what did you do?', 'what has "
+          "been changed?'. Undoing is done by the user in the console menu, not by you.",
+          {"type": "object", "properties": {
+              "last": {"type": "integer", "description": "number of newest entries (default 20)"},
+              "writes_only": {"type": "boolean", "description": "only steps that wrote files (default false)"}}})
+    def show_journal(last=20, writes_only=False):
+        case = L.case_dir(root)
+        if not case:
+            return "no operation log: this folder is not a case in the session space"
+        j = J.Journal(case)
+        text = j.summary(int(last or 20), kinds=("write", "cli") if writes_only else None)
+        nxt = j.last_undoable()
+        return text + ("\n\nnext undo (console menu): " + j.describe(nxt) if nxt else "")
+
     @tool("view_thumbnail", "Look at the middle image of a series (returned to you as a picture).",
           {"type": "object", "properties": {"series_id": {"type": "string"}}, "required": ["series_id"]})
     def view_thumbnail(series_id):
@@ -449,16 +465,17 @@ def setup(params):
     from . import organize as O
     state = {"plan": None}
     OVERWRITE = {"type": "boolean", "description": "true = replace an earlier result in that folder (only when the "
-                                                   "user asked for a new run; deletes the earlier result, the user must approve)"}
+                                                   "user asked for a new run; the earlier result goes to the recycle "
+                                                   "bin, the user must approve)"}
 
     def prepare_out(out, overwrite):
         """'' if the folder can be written. An earlier result is replaced only with overwrite=true
-        (inside the case folder only, never the originals)."""
+        (inside the case folder only, never the originals); it is moved to the recycle bin, not deleted."""
         err = O.check_output(root, out)
         if err.startswith("output folder is not empty") and overwrite:
             case = L.case_dir(root)
             if case and os.path.commonpath([case, out]) == case and os.path.abspath(out) != os.path.abspath(case):
-                shutil.rmtree(out)
+                J.move_to_trash(case, out, os.path.basename(out))
                 return ""
         if err.startswith("output folder is not empty"):
             return err + " (an earlier result) - call again with overwrite=true to replace it"
@@ -754,7 +771,7 @@ def setup(params):
             structure_set=structure_set)
 
     n_st = sum(len(p["studies"]) for p in tree)
-    return Toolset(name="dicom", tools=[list_series, get_series_details, lookup_uid, view_thumbnail, list_structures,
+    return Toolset(name="dicom", tools=[list_series, get_series_details, lookup_uid, show_journal, view_thumbnail, list_structures,
                                         check_identifiers, organize_dicom,
                                         anonymize_dicom, export_mha, structure_stats, compare_structures,
                                         structure_values, merge_structures, expand_structure, make_labelmap,
